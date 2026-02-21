@@ -1,0 +1,129 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider             = "prisma-client-py"
+  interface            = "asyncio"
+  recursive_type_depth = 5
+}
+
+enum UploadStatus {
+  PROCESSING
+  READY
+  ERROR
+}
+
+enum SessionPhase {
+  GREETING
+  TOPIC_SELECTION
+  TEACHING
+  QUIZ
+  REVIEW
+  WRAP_UP
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+  TOOL
+}
+
+model Upload {
+  id          String       @id @default(cuid())
+  filename    String
+  fileType    String       @map("file_type")
+  fileSize    Int          @map("file_size")
+  status      UploadStatus @default(PROCESSING)
+  totalSlides Int          @default(0) @map("total_slides")
+  metadata    Json?
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  slides   Slide[]
+  sessions Session[]
+
+  @@map("uploads")
+}
+
+model Slide {
+  id          String  @id @default(cuid())
+  uploadId    String  @map("upload_id")
+  slideNumber Int     @map("slide_number")
+  title       String?
+  textContent String  @map("text_content")
+  hasImages   Boolean @default(false) @map("has_images")
+  imagePaths  Json?   @map("image_paths")
+  metadata    Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  upload Upload @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+
+  @@unique([uploadId, slideNumber])
+  @@map("slides")
+}
+
+model Session {
+  id        String       @id @default(cuid())
+  uploadId  String       @map("upload_id")
+  studentId String?      @map("student_id")
+  phase     SessionPhase @default(GREETING)
+  metadata  Json?
+  startedAt DateTime     @default(now()) @map("started_at")
+  endedAt   DateTime?    @map("ended_at")
+
+  upload   Upload           @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+  messages Message[]
+  progress StudentProgress?
+  costLogs CostLog[]
+
+  @@map("sessions")
+}
+
+model Message {
+  id        String      @id @default(cuid())
+  sessionId String      @map("session_id")
+  role      MessageRole
+  content   String
+  toolCalls Json?       @map("tool_calls")
+  createdAt DateTime    @default(now()) @map("created_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@map("messages")
+}
+
+model StudentProgress {
+  id              String   @id @default(cuid())
+  sessionId       String   @unique @map("session_id")
+  uploadId        String   @map("upload_id")
+  topicsCovered   Json     @default("[]") @map("topics_covered")
+  quizScores      Json     @default("{}") @map("quiz_scores")
+  totalQuestions   Int      @default(0) @map("total_questions")
+  correctAnswers  Int      @default(0) @map("correct_answers")
+  confidenceLevel Float    @default(0.0) @map("confidence_level")
+  lastActive      DateTime @default(now()) @map("last_active")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@map("student_progress")
+}
+
+model CostLog {
+  id           String   @id @default(cuid())
+  sessionId    String?  @map("session_id")
+  model        String
+  inputTokens  Int      @map("input_tokens")
+  outputTokens Int      @map("output_tokens")
+  costUsd      Float    @map("cost_usd")
+  operation    String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  session Session? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@map("cost_logs")
+}
