@@ -1,14 +1,17 @@
 """
-LLM client wrappers for OpenRouter (chat) and OpenAI (embeddings).
+LLM client wrappers for chat and embeddings.
+
+Supports multiple providers (OpenRouter, LM Studio) via the same
+OpenAI-compatible SDK. Provider selection is driven by config.
 
 LLMClient handles:
-- OpenRouter API calls via OpenAI-compatible SDK
+- Chat completions via configurable provider
 - Retry with exponential backoff (3 attempts)
 - Circuit breaker (opens after 5 consecutive failures)
 - Automatic cost tracking via MetricsCollector
 - Model fallback chain
 
-EmbeddingClient handles direct OpenAI API calls for embeddings.
+EmbeddingClient handles embeddings via configurable provider.
 """
 
 from __future__ import annotations
@@ -21,7 +24,8 @@ from typing import Any, AsyncGenerator
 import openai
 
 from backend.config import settings
-from backend.llm.models import FALLBACK_CHAIN, estimate_cost
+from backend.llm.models import get_fallback_chain, estimate_cost
+from backend.llm.providers import get_chat_provider_config, get_embedding_provider_config
 from backend.monitoring.logger import get_logger
 from backend.monitoring.metrics import metrics
 
@@ -79,21 +83,21 @@ class CircuitBreaker:
 
 class LLMClient:
     """
-    OpenRouter LLM client with retry, circuit breaker, and cost tracking.
+    LLM client with retry, circuit breaker, and cost tracking.
 
-    Uses the OpenAI SDK pointed at OpenRouter's base URL.
+    Uses the OpenAI SDK pointed at the active provider's base URL
+    (OpenRouter or LM Studio).
     """
 
     def __init__(self) -> None:
-        self._client = openai.AsyncOpenAI(
-            base_url=settings.openrouter_base_url,
-            api_key=settings.openrouter_api_key,
-            default_headers={
-                "HTTP-Referer": settings.app_url,
-                "X-Title": settings.app_name,
-            },
-        )
+        self._provider_config = get_chat_provider_config()
+        self._client = openai.AsyncOpenAI(**self._provider_config.client_kwargs())
         self._circuit = CircuitBreaker()
+
+    @property
+    def provider(self) -> str:
+        """Name of the active provider (e.g., 'openrouter', 'lmstudio')."""
+        return self._provider_config.name
 
     async def chat(
         self,
@@ -108,7 +112,7 @@ class LLMClient:
 
         Returns the full ChatCompletion response as a dict.
         """
-        model = model or settings.primary_model
+        model = model or settings.active_primary_model
         return await self._call_with_retry(
             model=model,
             messages=messages,
@@ -131,7 +135,7 @@ class LLMClient:
 
         Each chunk is a dict with: choices[0].delta.content, etc.
         """
-        model = model or settings.primary_model
+        model = model or settings.active_primary_model
 
         kwargs: dict[str, Any] = {
             "model": model,
@@ -184,7 +188,7 @@ class LLMClient:
         stream: bool,
     ) -> dict[str, Any]:
         """Execute an API call with retry logic and model fallback."""
-        models_to_try = [model] + [m for m in FALLBACK_CHAIN if m != model]
+        models_to_try = [model] + [m for m in get_fallback_chain() if m != model]
 
         for model_id in models_to_try:
             if not self._circuit.can_execute():
@@ -218,6 +222,7 @@ class LLMClient:
                             output_tokens=usage.completion_tokens or 0,
                             latency_ms=elapsed_ms,
                             operation="chat",
+                            provider=self.provider,
                         )
 
                     return response.model_dump()
@@ -259,25 +264,32 @@ class LLMClient:
 
 
 class EmbeddingClient:
-    """Direct OpenAI client for embeddings (not routed through OpenRouter)."""
+    """Embedding client using the active provider (OpenAI or LM Studio)."""
 
     def __init__(self) -> None:
-        self._client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
+        self._provider_config = get_embedding_provider_config()
+        self._client = openai.AsyncOpenAI(**self._provider_config.client_kwargs())
+
+    @property
+    def provider(self) -> str:
+        """Name of the active embedding provider."""
+        return self._provider_config.name
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for a list of texts."""
         response = await self._client.embeddings.create(
-            model=settings.embedding_model,
+            model=settings.active_embedding_model,
             input=texts,
         )
 
         if response.usage:
             metrics.record_llm_call(
-                model=settings.embedding_model,
+                model=settings.active_embedding_model,
                 input_tokens=response.usage.total_tokens,
                 output_tokens=0,
                 latency_ms=0,
                 operation="embedding",
+                provider=self.provider,
             )
 
         return [item.embedding for item in response.data]

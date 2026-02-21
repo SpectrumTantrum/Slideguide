@@ -42,11 +42,14 @@ class IngestionPipeline:
 
     @property
     def embedding_client(self) -> Any:
-        """Lazy-init the OpenAI embedding client (direct, not OpenRouter)."""
+        """Lazy-init the embedding client using the active provider."""
         if self._embedding_client is None:
             import openai
 
-            self._embedding_client = openai.OpenAI(api_key=settings.openai_api_key)
+            from backend.llm.providers import get_embedding_provider_config
+
+            config = get_embedding_provider_config()
+            self._embedding_client = openai.AsyncOpenAI(**config.client_kwargs())
         return self._embedding_client
 
     async def ingest(self, parsed_doc: ParsedDocument) -> int:
@@ -69,7 +72,7 @@ class IngestionPipeline:
 
             # Step 2: Generate embeddings
             texts = [c["document"] for c in all_chunks]
-            embeddings = self._embed_texts(texts)
+            embeddings = await self._embed_texts(texts)
 
             # Step 3: Attach embeddings to chunks
             for chunk, embedding in zip(all_chunks, embeddings):
@@ -193,21 +196,22 @@ class IngestionPipeline:
 
         return chunks
 
-    def _embed_texts(self, texts: list[str]) -> list[list[float]]:
+    async def _embed_texts(self, texts: list[str]) -> list[list[float]]:
         """
-        Generate embeddings using OpenAI's text-embedding-3-small.
+        Generate embeddings using the active embedding provider.
 
         Batches requests to respect API limits (max 2048 per batch).
         """
         all_embeddings: list[list[float]] = []
         batch_size = 2048
+        model = settings.active_embedding_model
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
 
             with performance_timer("embedding_batch"):
-                response = self.embedding_client.embeddings.create(
-                    model=settings.embedding_model,
+                response = await self.embedding_client.embeddings.create(
+                    model=model,
                     input=batch,
                 )
 
@@ -217,14 +221,15 @@ class IngestionPipeline:
             # Track cost
             if hasattr(response, "usage"):
                 metrics.record_llm_call(
-                    model=settings.embedding_model,
+                    model=model,
                     input_tokens=response.usage.total_tokens,
                     output_tokens=0,
                     latency_ms=0,
                     operation="embedding",
+                    provider=settings.embedding_provider,
                 )
 
-        logger.debug("embeddings_generated", total_texts=len(texts))
+        logger.debug("embeddings_generated", total_texts=len(texts), model=model)
         return all_embeddings
 
     def _build_bm25_index(

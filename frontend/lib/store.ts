@@ -8,6 +8,7 @@
 import { create } from "zustand";
 import type {
   ChatMessage,
+  ProviderConfig,
   QuizScore,
   SessionState,
   SlideContent,
@@ -43,6 +44,9 @@ interface SlideGuideStore {
   explanationMode: string;
   pacing: string;
 
+  // Provider
+  provider: ProviderConfig | null;
+
   // Actions
   uploadFile: (file: File) => Promise<void>;
   startSession: (uploadId: string) => Promise<void>;
@@ -50,6 +54,7 @@ interface SlideGuideStore {
   stopStreaming: () => void;
   loadHistory: () => Promise<void>;
   loadSlides: () => Promise<void>;
+  loadProviderConfig: () => Promise<void>;
   setCurrentSlide: (slide: number) => void;
   setExplanationMode: (mode: string) => void;
   setPacing: (pacing: string) => void;
@@ -72,6 +77,7 @@ const initialState = {
   phase: "greeting",
   explanationMode: "standard",
   pacing: "medium",
+  provider: null,
 };
 
 export const useStore = create<SlideGuideStore>((set, get) => ({
@@ -232,6 +238,15 @@ export const useStore = create<SlideGuideStore>((set, get) => ({
       set({ slides: data.slides });
     } catch {
       // Silent fail
+    }
+  },
+
+  loadProviderConfig: async () => {
+    try {
+      const config = await api.getProviderConfig();
+      set({ provider: config });
+    } catch {
+      // Silent fail — provider info is informational
     }
   },
 

@@ -7,6 +7,8 @@
 
 import type {
   MessageHistoryResponse,
+  ModelInfo,
+  ProviderConfig,
   SessionState,
   SlidesResponse,
   UploadResponse,
@@ -87,6 +89,18 @@ export async function getHistory(
   offset = 0
 ): Promise<MessageHistoryResponse> {
   return request(`/session/${sessionId}/history?limit=${limit}&offset=${offset}`);
+}
+
+// ── Provider / Settings ─────────────────────────────────────────────────────
+
+export async function getProviderConfig(): Promise<ProviderConfig> {
+  return request("/settings/provider");
+}
+
+export async function getAvailableModels(): Promise<ModelInfo[]> {
+  return request<{ models: ModelInfo[] }>("/settings/models").then(
+    (r) => r.models
+  );
 }
 
 // ── SSE Streaming ───────────────────────────────────────────────────────────

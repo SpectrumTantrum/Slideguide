@@ -67,3 +67,30 @@ export interface QuizScore {
   total: number;
   confidence?: number;
 }
+
+export interface ProviderConfig {
+  llm_provider: "openrouter" | "lmstudio";
+  embedding_provider: "openai" | "lmstudio";
+  vision_provider: "openrouter" | "lmstudio";
+  capabilities: {
+    vision: boolean;
+    tool_mode: "native" | "prompt" | "none";
+  };
+  models: {
+    primary: string;
+    routing: string;
+    embedding: string;
+    vision: string;
+  };
+  lmstudio?: {
+    status: "ok" | "unreachable";
+    models_loaded: number;
+  };
+}
+
+export interface ModelInfo {
+  id: string;
+  display_name?: string;
+  supports_tools?: boolean;
+  supports_vision?: boolean;
+}

@@ -29,7 +29,9 @@ from backend.models.schemas import (
 from backend.monitoring.health import router as health_router
 from backend.monitoring.logger import configure_logging, get_logger
 from backend.monitoring.metrics import metrics
+from backend.agent.nodes import tool_compat
 from backend.routes.chat import router as chat_router
+from backend.routes.settings import router as settings_router, set_tool_compat
 from backend.rag.ingestion import IngestionPipeline
 from backend.rag.retriever import HybridRetriever
 from backend.rag.vectorstore import VectorStore
@@ -84,6 +86,10 @@ app.include_router(health_router)
 
 # Chat/session routes
 app.include_router(chat_router)
+
+# Settings/provider routes
+app.include_router(settings_router)
+set_tool_compat(tool_compat)
 
 
 # ── Middleware ─────────────────────────────────────────────────────────────────

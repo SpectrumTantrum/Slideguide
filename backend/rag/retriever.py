@@ -42,11 +42,14 @@ class HybridRetriever:
 
     @property
     def embedding_client(self) -> Any:
-        """Lazy-init the OpenAI embedding client."""
+        """Lazy-init the embedding client using the active provider."""
         if self._embedding_client is None:
             import openai
 
-            self._embedding_client = openai.OpenAI(api_key=settings.openai_api_key)
+            from backend.llm.providers import get_embedding_provider_config
+
+            config = get_embedding_provider_config()
+            self._embedding_client = openai.AsyncOpenAI(**config.client_kwargs())
         return self._embedding_client
 
     async def retrieve(
@@ -68,7 +71,7 @@ class HybridRetriever:
         """
         with performance_timer("hybrid_retrieval") as timer_result:
             # Step 1: Embed the query
-            query_embedding = self._embed_query(query)
+            query_embedding = await self._embed_query(query)
 
             # Step 2: Semantic search
             candidate_count = n_results * 3  # Over-fetch for fusion
@@ -113,10 +116,10 @@ class HybridRetriever:
 
         return final_results
 
-    def _embed_query(self, query: str) -> list[float]:
-        """Embed a single query string."""
-        response = self.embedding_client.embeddings.create(
-            model=settings.embedding_model,
+    async def _embed_query(self, query: str) -> list[float]:
+        """Embed a single query string using the active embedding provider."""
+        response = await self.embedding_client.embeddings.create(
+            model=settings.active_embedding_model,
             input=[query],
         )
         return response.data[0].embedding

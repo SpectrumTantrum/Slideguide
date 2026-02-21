@@ -2,11 +2,14 @@
 ChromaDB vector store wrapper.
 
 Manages collections per upload, handles document storage with metadata,
-and provides semantic similarity search.
+and provides semantic similarity search. Collection names include an
+embedding model hash so that switching models creates separate collections
+rather than mixing incompatible vector spaces.
 """
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import chromadb
@@ -16,6 +19,12 @@ from backend.models.schemas import ChunkMetadata, RetrievalResult
 from backend.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _embedding_model_tag() -> str:
+    """Short hash of the active embedding model for collection naming."""
+    model = settings.active_embedding_model
+    return hashlib.md5(model.encode()).hexdigest()[:8]
 
 
 class VectorStore:
@@ -39,10 +48,15 @@ class VectorStore:
         return self._client
 
     def _collection_name(self, upload_id: str) -> str:
-        """Generate a valid ChromaDB collection name from upload_id."""
+        """Generate a valid ChromaDB collection name from upload_id.
+
+        Includes an embedding model tag so different models get separate
+        collections (their vector spaces are incompatible).
+        """
         # ChromaDB requires 3-63 chars, alphanumeric + underscores/hyphens
-        safe_id = upload_id.replace("-", "_")[:50]
-        return f"upload_{safe_id}"
+        safe_id = upload_id.replace("-", "_")[:40]
+        tag = _embedding_model_tag()
+        return f"upload_{safe_id}_{tag}"
 
     def get_or_create_collection(self, upload_id: str) -> chromadb.Collection:
         """Get or create a ChromaDB collection for an upload."""

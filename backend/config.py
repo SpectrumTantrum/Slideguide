@@ -7,6 +7,8 @@ Fails fast with clear error messages if required variables are missing.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +21,11 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    # Provider selection
+    llm_provider: Literal["openrouter", "lmstudio"] = "openrouter"
+    embedding_provider: Literal["openai", "lmstudio"] = "openai"
+    vision_provider: Literal["openrouter", "lmstudio"] = "openrouter"
+
     # OpenRouter (LLM gateway)
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
@@ -26,7 +33,13 @@ class Settings(BaseSettings):
     # OpenAI (embeddings only)
     openai_api_key: str = ""
 
-    # Model IDs (OpenRouter format)
+    # LM Studio (local models)
+    lmstudio_base_url: str = "http://localhost:1234/v1"
+    lmstudio_primary_model: str = ""
+    lmstudio_routing_model: str = ""
+    lmstudio_embedding_model: str = ""
+
+    # Model IDs (OpenRouter format, used when llm_provider=openrouter)
     primary_model: str = "anthropic/claude-sonnet-4"
     routing_model: str = "anthropic/claude-haiku-4"
     vision_model: str = "anthropic/claude-sonnet-4"
@@ -52,6 +65,38 @@ class Settings(BaseSettings):
     # Cost control
     max_tokens_per_session: int = 100_000
     max_upload_size_mb: int = 50
+
+    @property
+    def is_local_llm(self) -> bool:
+        return self.llm_provider == "lmstudio"
+
+    @property
+    def is_local_embeddings(self) -> bool:
+        return self.embedding_provider == "lmstudio"
+
+    @property
+    def active_primary_model(self) -> str:
+        if self.is_local_llm:
+            return self.lmstudio_primary_model
+        return self.primary_model
+
+    @property
+    def active_routing_model(self) -> str:
+        if self.is_local_llm:
+            return self.lmstudio_routing_model or self.lmstudio_primary_model
+        return self.routing_model
+
+    @property
+    def active_embedding_model(self) -> str:
+        if self.is_local_embeddings:
+            return self.lmstudio_embedding_model
+        return self.embedding_model
+
+    @property
+    def active_vision_model(self) -> str:
+        if self.vision_provider == "lmstudio":
+            return self.lmstudio_primary_model
+        return self.vision_model
 
     @property
     def is_production(self) -> bool:

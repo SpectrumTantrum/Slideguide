@@ -9,6 +9,7 @@ import ChatInterface from "@/components/ChatInterface";
 import SlideViewer from "@/components/SlideViewer";
 import SlideNavigator from "@/components/SlideNavigator";
 import ProgressBar from "@/components/ProgressBar";
+import ProviderBanner from "@/components/ProviderBanner";
 
 export default function SessionPage({ params }: { params: { id: string } }) {
   const router = useRouter();
@@ -36,6 +37,9 @@ export default function SessionPage({ params }: { params: { id: string } }) {
 
   return (
     <div className="flex h-screen flex-col bg-white dark:bg-gray-950">
+      {/* Provider status banner (only visible when using local models) */}
+      <ProviderBanner />
+
       {/* Top bar */}
       <header className="flex items-center justify-between border-b border-gray-200 px-4 py-2 dark:border-gray-800">
         <div className="flex items-center gap-3">
