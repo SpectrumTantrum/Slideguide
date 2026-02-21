@@ -1,9 +1,11 @@
 """
 Vision Language Model (VLM) client for image understanding.
 
-Uses OpenRouter to send images (base64-encoded) to vision-capable
-models for description, chart analysis, and diagram relationship
-extraction. Results are stored as text chunks in the vector store.
+Uses a vision-capable provider to send images (base64-encoded) for
+description, chart analysis, and diagram relationship extraction.
+Defaults to OpenRouter (cloud VLMs) even when the main LLM provider
+is set to LM Studio, because most local models lack vision support.
+Falls back gracefully when no vision provider is available.
 """
 
 from __future__ import annotations
@@ -12,8 +14,10 @@ import base64
 from pathlib import Path
 from typing import Any
 
+import openai
+
 from backend.config import settings
-from backend.llm.client import LLMClient
+from backend.llm.providers import get_vision_provider_config
 from backend.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
@@ -47,12 +51,27 @@ class VisionClient:
     """
     Client for describing images using vision-capable LLMs.
 
-    Sends base64-encoded images via OpenRouter to models that
-    support the vision/image content type.
+    Uses a dedicated client pointed at the vision provider (defaults to
+    OpenRouter). Falls back to a text message when no vision provider
+    is configured.
     """
 
     def __init__(self) -> None:
-        self._llm = LLMClient()
+        self._provider_config = get_vision_provider_config()
+        self._available = bool(self._provider_config.api_key and self._provider_config.api_key != "lm-studio")
+
+        # For lmstudio vision provider, we trust the user knows they have a vision model
+        if settings.vision_provider == "lmstudio":
+            self._available = True
+
+        if self._available:
+            self._client = openai.AsyncOpenAI(**self._provider_config.client_kwargs())
+        else:
+            self._client = None
+            logger.warning(
+                "vision_unavailable",
+                reason="No API key for vision provider. Set OPENROUTER_API_KEY or VISION_PROVIDER=lmstudio.",
+            )
 
     async def describe_image(
         self,
@@ -117,6 +136,12 @@ class VisionClient:
         prompt: str,
     ) -> str:
         """Send an image to the vision model and return the description."""
+        if not self._available or self._client is None:
+            return (
+                "[Vision unavailable] Image analysis requires a vision-capable model. "
+                "Configure OPENROUTER_API_KEY or set VISION_PROVIDER=lmstudio with a vision model loaded."
+            )
+
         messages: list[dict[str, Any]] = [
             {
                 "role": "user",
@@ -133,25 +158,26 @@ class VisionClient:
         ]
 
         try:
-            response = await self._llm.chat(
+            response = await self._client.chat.completions.create(
+                model=settings.active_vision_model,
                 messages=messages,
-                model=settings.vision_model,
                 temperature=0.3,
                 max_tokens=1024,
             )
 
-            content = response["choices"][0]["message"].get("content", "")
+            content = response.choices[0].message.content or ""
 
             logger.info(
                 "vlm_description_generated",
-                model=settings.vision_model,
+                model=settings.active_vision_model,
+                provider=self._provider_config.name,
                 description_length=len(content),
             )
 
             return content
 
         except Exception as e:
-            logger.error("vlm_call_failed", error=str(e))
+            logger.error("vlm_call_failed", error=str(e), provider=self._provider_config.name)
             return ""
 
     @staticmethod

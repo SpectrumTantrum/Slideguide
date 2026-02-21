@@ -27,8 +27,10 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
 
 
 def estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Calculate estimated cost in USD for a model call."""
-    pricing = MODEL_PRICING.get(model, {"input": 0.001, "output": 0.002})
+    """Calculate estimated cost in USD. Returns 0 for unknown (local) models."""
+    pricing = MODEL_PRICING.get(model)
+    if pricing is None:
+        return 0.0
     return (input_tokens / 1000 * pricing["input"]) + (
         output_tokens / 1000 * pricing["output"]
     )
@@ -55,6 +57,10 @@ class MetricsCollector:
     model_token_counts: dict[str, int] = field(default_factory=dict)
     model_error_counts: dict[str, int] = field(default_factory=dict)
 
+    # Per-provider tracking
+    provider_call_counts: dict[str, int] = field(default_factory=dict)
+    throughput_samples: list[float] = field(default_factory=list)  # tokens/sec
+
     def record_llm_call(
         self,
         model: str,
@@ -63,6 +69,7 @@ class MetricsCollector:
         latency_ms: float,
         operation: str,
         session_id: str | None = None,
+        provider: str = "",
     ) -> float:
         """Record an LLM call and return estimated cost."""
         cost = estimate_cost(model, input_tokens, output_tokens)
@@ -79,9 +86,21 @@ class MetricsCollector:
             self.model_token_counts.get(model, 0) + input_tokens + output_tokens
         )
 
+        # Per-provider tracking
+        if provider:
+            self.provider_call_counts[provider] = (
+                self.provider_call_counts.get(provider, 0) + 1
+            )
+
+        # Throughput (tokens/sec) for non-embedding calls with known latency
+        if latency_ms > 0 and output_tokens > 0 and operation != "embedding":
+            tps = output_tokens / (latency_ms / 1000)
+            self.throughput_samples.append(tps)
+
         logger.info(
             "llm_call",
             model=model,
+            provider=provider or "unknown",
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cost_usd=round(cost, 6),
@@ -124,6 +143,11 @@ class MetricsCollector:
         avg_latency = (
             sum(self.latencies) / len(self.latencies) if self.latencies else 0.0
         )
+        avg_throughput = (
+            sum(self.throughput_samples) / len(self.throughput_samples)
+            if self.throughput_samples
+            else 0.0
+        )
         return {
             "llm": {
                 "total_calls": self.total_llm_calls,
@@ -131,7 +155,9 @@ class MetricsCollector:
                 "total_output_tokens": self.total_output_tokens,
                 "total_cost_usd": round(self.total_cost_usd, 4),
                 "avg_latency_ms": round(avg_latency, 1),
+                "avg_throughput_tps": round(avg_throughput, 1),
             },
+            "providers": self.provider_call_counts,
             "retrieval": {
                 "total_queries": self.total_retrieval_queries,
             },

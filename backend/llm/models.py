@@ -25,6 +25,21 @@ class ModelConfig:
     supports_tools: bool = True
     supports_vision: bool = False
     context_window: int = 200_000
+    provider: str = "openrouter"  # "openrouter", "openai", or "lmstudio"
+
+
+# Default config for local models not in the registry (free, optimistic tool support)
+LOCAL_MODEL_DEFAULTS = ModelConfig(
+    model_id="local",
+    display_name="Local Model",
+    cost_per_1k_input=0.0,
+    cost_per_1k_output=0.0,
+    max_tokens=4096,
+    supports_tools=True,
+    supports_vision=False,
+    context_window=8192,
+    provider="lmstudio",
+)
 
 
 # Model registry — all models available via OpenRouter
@@ -68,14 +83,15 @@ MODELS: dict[str, ModelConfig] = {
         supports_tools=False,
         supports_vision=False,
         context_window=8191,
+        provider="openai",
     ),
 }
 
-# Fallback chains: if primary fails, try these in order
-FALLBACK_CHAIN: list[str] = [
-    settings.primary_model,
-    settings.fallback_model,
-]
+def get_fallback_chain() -> list[str]:
+    """Get the fallback chain for the active provider. Local models have no fallback."""
+    if settings.is_local_llm:
+        return [settings.active_primary_model]
+    return [settings.primary_model, settings.fallback_model]
 
 
 def get_model(
@@ -83,23 +99,23 @@ def get_model(
 ) -> ModelConfig:
     """Get the appropriate model config for a given purpose."""
     model_map = {
-        "reasoning": settings.primary_model,
-        "routing": settings.routing_model,
-        "vision": settings.vision_model,
-        "embedding": settings.embedding_model,
+        "reasoning": settings.active_primary_model,
+        "routing": settings.active_routing_model,
+        "vision": settings.active_vision_model,
+        "embedding": settings.active_embedding_model,
         "fallback": settings.fallback_model,
     }
     model_id = model_map[purpose]
-    return MODELS.get(model_id, MODELS[settings.primary_model])
+    return MODELS.get(model_id, LOCAL_MODEL_DEFAULTS)
 
 
 def estimate_cost(model_id: str, input_tokens: int, output_tokens: int) -> float:
-    """Estimate cost in USD for a model call."""
+    """Estimate cost in USD for a model call. Returns 0 for local models."""
     config = MODELS.get(model_id)
     if config:
         return (
             input_tokens / 1000 * config.cost_per_1k_input
             + output_tokens / 1000 * config.cost_per_1k_output
         )
-    # Fallback estimate
-    return (input_tokens + output_tokens) / 1000 * 0.002
+    # Unknown model (likely local) — free
+    return 0.0

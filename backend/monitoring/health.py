@@ -59,17 +59,40 @@ async def _check_openrouter() -> str:
         return "unavailable"
 
 
+async def _check_lmstudio() -> dict:
+    """Check LM Studio connectivity and loaded models."""
+    from backend.llm.discovery import check_lmstudio_health
+
+    return await check_lmstudio_health()
+
+
 @router.get("/health")
 async def health_check() -> dict:
     """Full health check with all dependency statuses."""
-    checks = {
+    checks: dict = {
         "chromadb": await _check_chromadb(),
         "postgres": await _check_postgres(),
-        "openrouter": await _check_openrouter(),
     }
 
-    all_ok = all(v == "ok" for v in checks.values())
-    critical_ok = checks["postgres"] == "ok"  # Postgres is required
+    # Check the active LLM provider
+    if settings.llm_provider == "lmstudio":
+        lms_health = await _check_lmstudio()
+        checks["lmstudio"] = lms_health["status"]
+        checks["lmstudio_models"] = lms_health["models_loaded"]
+        # Still check OpenRouter if vision needs it
+        if settings.vision_provider == "openrouter" and settings.openrouter_api_key:
+            checks["openrouter_vision"] = await _check_openrouter()
+    else:
+        checks["openrouter"] = await _check_openrouter()
+
+    all_ok = all(
+        v == "ok" for k, v in checks.items()
+        if isinstance(v, str) and k != "lmstudio_models"
+    )
+    # Postgres is always required; LM Studio is critical when it's the LLM provider
+    critical_ok = checks["postgres"] == "ok"
+    if settings.llm_provider == "lmstudio":
+        critical_ok = critical_ok and checks.get("lmstudio") == "ok"
 
     if all_ok:
         status = "healthy"
@@ -128,6 +151,11 @@ async def get_metrics() -> dict:
 
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "active_provider": {
+            "llm": settings.llm_provider,
+            "embedding": settings.embedding_provider,
+            "vision": settings.vision_provider,
+        },
         **summary,
         "models": model_stats,
         "sessions": {
