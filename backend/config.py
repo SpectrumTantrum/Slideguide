@@ -51,13 +51,6 @@ class Settings(BaseSettings):
     supabase_anon_key: str = ""
     supabase_service_role_key: str = ""
 
-    # Database (deprecated — use Supabase)
-    database_url: str = "postgresql://postgres:postgres@localhost:5432/slideguide"
-
-    # ChromaDB (deprecated — being replaced by pgvector)
-    chromadb_host: str = "localhost"
-    chromadb_port: int = 8000
-
     # Tesseract OCR
     tesseract_cmd: str = "tesseract"
 
@@ -106,10 +99,6 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
-
-    @property
-    def chromadb_url(self) -> str:
-        return f"http://{self.chromadb_host}:{self.chromadb_port}"
 
     @property
     def max_upload_bytes(self) -> int:
