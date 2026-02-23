@@ -1,5 +1,5 @@
 """
-Hybrid retrieval pipeline: semantic search + BM25 keyword search.
+Hybrid retrieval pipeline: semantic search + PostgreSQL full-text search.
 
 Combines results using Reciprocal Rank Fusion (RRF) and applies
 Maximum Marginal Relevance (MMR) for diversity.
@@ -7,12 +7,7 @@ Maximum Marginal Relevance (MMR) for diversity.
 
 from __future__ import annotations
 
-import pickle
-import tempfile
-from pathlib import Path
 from typing import Any
-
-import numpy as np
 
 from backend.config import settings
 from backend.models.schemas import ChunkMetadata, RetrievalResult
@@ -33,7 +28,7 @@ class HybridRetriever:
     """
     Hybrid retrieval combining semantic and keyword search.
 
-    Pipeline: query → [semantic search, BM25 search] → RRF fusion → MMR → results
+    Pipeline: query -> [semantic search, FTS search] -> RRF fusion -> MMR -> results
     """
 
     def __init__(self, vectorstore: VectorStore) -> None:
@@ -63,8 +58,8 @@ class HybridRetriever:
         Run the full hybrid retrieval pipeline.
 
         1. Embed query
-        2. Semantic search (ChromaDB)
-        3. BM25 keyword search
+        2. Semantic search (pgvector)
+        3. Full-text search (PostgreSQL tsvector)
         4. Reciprocal Rank Fusion
         5. Maximum Marginal Relevance for diversity
         6. Return top-n results with scores and citations
@@ -86,11 +81,11 @@ class HybridRetriever:
                 where=where_filter,
             )
 
-            # Step 3: BM25 keyword search
-            bm25_results = self._bm25_search(query, upload_id, candidate_count)
+            # Step 3: Full-text search (replaces BM25)
+            fts_results = self._text_search(query, upload_id, candidate_count, slide_filter)
 
             # Step 4: Reciprocal Rank Fusion
-            fused_results = self._reciprocal_rank_fusion(semantic_results, bm25_results)
+            fused_results = self._reciprocal_rank_fusion(semantic_results, fts_results)
 
             # Step 5: MMR for diversity
             if query_embedding and len(fused_results) > n_results:
@@ -108,7 +103,7 @@ class HybridRetriever:
             upload_id=upload_id,
             query_length=len(query),
             semantic_count=len(semantic_results),
-            bm25_count=len(bm25_results),
+            fts_count=len(fts_results),
             fused_count=len(fused_results),
             final_count=len(final_results),
             latency_ms=round(latency_ms, 1),
@@ -124,71 +119,47 @@ class HybridRetriever:
         )
         return response.data[0].embedding
 
-    def _bm25_search(
-        self, query: str, upload_id: str, n_results: int
+    def _text_search(
+        self,
+        query: str,
+        upload_id: str,
+        n_results: int,
+        slide_filter: int | None = None,
     ) -> list[RetrievalResult]:
-        """Search using BM25 keyword matching."""
-        index_path = (
-            Path(tempfile.gettempdir()) / "slideguide" / "bm25" / f"{upload_id}.pkl"
-        )
+        """Full-text search using PostgreSQL tsvector (replaces BM25)."""
+        from backend.db.client import get_supabase
+        from backend.db.repositories.chunks import ChunkRepository
 
-        if not index_path.exists():
-            logger.debug("bm25_index_not_found", upload_id=upload_id)
-            return []
+        repo = ChunkRepository(get_supabase())
+        results = repo.text_search(query, upload_id, n_results, slide_filter)
 
-        try:
-            with open(index_path, "rb") as f:
-                index_data = pickle.load(f)
-
-            bm25 = index_data["bm25"]
-            documents = index_data["documents"]
-            metadatas = index_data["metadatas"]
-
-            # Tokenize query
-            tokenized_query = query.lower().split()
-            scores = bm25.get_scores(tokenized_query)
-
-            # Get top-n indices
-            top_indices = np.argsort(scores)[::-1][:n_results]
-
-            results: list[RetrievalResult] = []
-            for idx in top_indices:
-                if scores[idx] <= 0:
-                    continue
-                meta = metadatas[idx]
-                results.append(
-                    RetrievalResult(
-                        content=documents[idx],
-                        metadata=ChunkMetadata(
-                            upload_id=meta.get("upload_id", upload_id),
-                            slide_number=meta.get("slide_number", 0),
-                            chunk_index=meta.get("chunk_index", 0),
-                            title=meta.get("title", ""),
-                            content_type=meta.get("content_type", "text"),
-                        ),
-                        score=float(scores[idx]),
-                        source="keyword",
-                    )
-                )
-
-            return results
-
-        except Exception as e:
-            logger.error("bm25_search_failed", upload_id=upload_id, error=str(e))
-            return []
+        return [
+            RetrievalResult(
+                content=r["content"],
+                metadata=ChunkMetadata(
+                    upload_id=r["upload_id"],
+                    slide_number=r["slide_number"],
+                    chunk_index=r["chunk_index"],
+                    title=r["title"],
+                    content_type=r["content_type"],
+                ),
+                score=r["rank"],
+                source="keyword",
+            )
+            for r in results
+        ]
 
     def _reciprocal_rank_fusion(
         self,
         semantic_results: list[RetrievalResult],
-        bm25_results: list[RetrievalResult],
+        keyword_results: list[RetrievalResult],
     ) -> list[RetrievalResult]:
         """
-        Merge results from semantic and BM25 search using RRF.
+        Merge results from semantic and keyword search using RRF.
 
         RRF score = sum(1 / (k + rank_i)) for each result list.
         Deduplicates by content hash.
         """
-        # Build score map keyed by content hash
         score_map: dict[str, dict] = {}
 
         for rank, result in enumerate(semantic_results):
@@ -197,18 +168,16 @@ class HybridRetriever:
                 score_map[key] = {"result": result, "rrf_score": 0.0}
             score_map[key]["rrf_score"] += 1.0 / (RRF_K + rank + 1)
 
-        for rank, result in enumerate(bm25_results):
+        for rank, result in enumerate(keyword_results):
             key = self._result_key(result)
             if key not in score_map:
                 score_map[key] = {"result": result, "rrf_score": 0.0}
             score_map[key]["rrf_score"] += 1.0 / (RRF_K + rank + 1)
 
-        # Sort by RRF score descending
         sorted_items = sorted(
             score_map.values(), key=lambda x: x["rrf_score"], reverse=True
         )
 
-        # Update scores and source labels
         results: list[RetrievalResult] = []
         for item in sorted_items:
             result = item["result"]
@@ -232,8 +201,6 @@ class HybridRetriever:
         if len(results) <= n_results:
             return results
 
-        # Use RRF scores as relevance proxy (we don't have individual embeddings
-        # for each result, so we approximate diversity by content similarity)
         selected: list[int] = []
         remaining = list(range(len(results)))
 
@@ -251,10 +218,8 @@ class HybridRetriever:
             best_mmr = -float("inf")
 
             for idx in remaining:
-                # Relevance component
                 rel = relevance[idx]
 
-                # Diversity component: penalize similarity to already selected
                 max_sim_to_selected = 0.0
                 if selected:
                     for sel_idx in selected:
