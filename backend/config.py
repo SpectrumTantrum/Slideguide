@@ -46,10 +46,15 @@ class Settings(BaseSettings):
     fallback_model: str = "deepseek/deepseek-chat-v3"
     embedding_model: str = "text-embedding-3-small"
 
-    # Database
+    # Supabase
+    supabase_url: str = "http://127.0.0.1:54321"
+    supabase_anon_key: str = ""
+    supabase_service_role_key: str = ""
+
+    # Database (deprecated — use Supabase)
     database_url: str = "postgresql://postgres:postgres@localhost:5432/slideguide"
 
-    # ChromaDB
+    # ChromaDB (deprecated — being replaced by pgvector)
     chromadb_host: str = "localhost"
     chromadb_port: int = 8000
 
