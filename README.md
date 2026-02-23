@@ -23,8 +23,7 @@ graph TB
     end
 
     subgraph External["External Services"]
-        OpenRouter[OpenRouter LLM]
-        OpenAI[OpenAI Embeddings]
+        OpenRouter[OpenRouter API]
     end
 
     subgraph Supabase["Supabase"]
@@ -43,8 +42,8 @@ graph TB
     Agent -->|Semantic + full-text| RAG
     Agent -->|State Persistence| Memory
     RAG -->|Vector search| Postgres
-    RAG --> OpenAI
-    Agent --> OpenRouter
+    RAG -->|Embeddings| OpenRouter
+    Agent -->|Chat| OpenRouter
     Agent -.->|Local alternative| LMStudio
     Memory --> Postgres
     Parsers -->|File storage| Storage
@@ -58,7 +57,7 @@ graph TB
 | Backend | FastAPI, Python 3.11+ | API server |
 | Agent | LangGraph | Multi-node stateful tutoring agent |
 | LLM | OpenRouter (Claude Sonnet/Haiku, DeepSeek fallback) or LM Studio (local) | Reasoning and generation |
-| Embeddings | OpenAI text-embedding-3-small or local embedding model | Semantic search vectors |
+| Embeddings | OpenRouter (OpenAI text-embedding-3-small) or local embedding model | Semantic search vectors |
 | Database | Supabase (PostgreSQL + pgvector) | Vector search, sessions, progress, cost tracking |
 | Storage | Supabase Storage | Uploaded file persistence |
 | RAG | Hybrid search (semantic + full-text) → RRF → MMR | Retrieval pipeline |
@@ -83,8 +82,7 @@ graph TB
 - Node.js 18+
 - [Docker](https://docs.docker.com/get-docker/) (required by Supabase CLI)
 - [Supabase CLI](https://supabase.com/docs/guides/cli) (or a hosted Supabase project)
-- OpenRouter API key (cloud mode) **or** [LM Studio](https://lmstudio.ai/) (local mode)
-- OpenAI API key (for embeddings in cloud mode)
+- OpenRouter API key (cloud mode) **or** [LM Studio](https://lmstudio.ai/) (local mode) — a single OpenRouter key covers both chat and embeddings
 - [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) (optional — only needed for OCR on image-heavy slides)
 
 ### 1. Clone and configure
@@ -158,7 +156,7 @@ SlideGuide can run entirely offline using local models via [LM Studio](https://l
 ```bash
 # Switch providers to local
 LLM_PROVIDER=lmstudio
-EMBEDDING_PROVIDER=lmstudio    # optional — keeps OpenAI embeddings if omitted
+EMBEDDING_PROVIDER=lmstudio    # optional — keeps OpenRouter embeddings if omitted
 VISION_PROVIDER=lmstudio       # optional — only if your model supports vision
 
 # LM Studio connection
@@ -179,15 +177,15 @@ Each capability (chat, embeddings, vision) can be pointed at a different provide
 | Variable | Options | Default |
 |----------|---------|---------|
 | `LLM_PROVIDER` | `openrouter`, `lmstudio` | `openrouter` |
-| `EMBEDDING_PROVIDER` | `openai`, `lmstudio` | `openai` |
+| `EMBEDDING_PROVIDER` | `openrouter`, `lmstudio` | `openrouter` |
 | `VISION_PROVIDER` | `openrouter`, `lmstudio` | `openrouter` |
 
 **Hybrid example** — local chat with cloud embeddings (best quality retrieval, free generation):
 
 ```bash
 LLM_PROVIDER=lmstudio
-EMBEDDING_PROVIDER=openai
-OPENAI_API_KEY=sk-...
+EMBEDDING_PROVIDER=openrouter
+OPENROUTER_API_KEY=sk-or-...
 ```
 
 ### How it works
@@ -221,7 +219,7 @@ You should see:
 - **RAM**: 7B models need ~6 GB RAM, 13B models need ~10 GB. Keep this in mind alongside Supabase services.
 - **GPU offloading**: Enable GPU layers in LM Studio for much faster inference.
 - **Routing model**: If unset, the primary model handles both reasoning and routing. For faster routing, load a smaller model and set `LMSTUDIO_ROUTING_MODEL` to its name.
-- **Embedding model**: Must be loaded separately in LM Studio alongside your chat model. If you skip local embeddings, keep `EMBEDDING_PROVIDER=openai` — OpenAI's embeddings are cheap and high quality.
+- **Embedding model**: Must be loaded separately in LM Studio alongside your chat model. If you skip local embeddings, keep `EMBEDDING_PROVIDER=openrouter` — embeddings are routed through OpenRouter using the same API key as chat, no separate key needed.
 
 ## Project Structure
 

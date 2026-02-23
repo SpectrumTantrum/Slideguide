@@ -25,7 +25,7 @@ class ModelConfig:
     supports_tools: bool = True
     supports_vision: bool = False
     context_window: int = 200_000
-    provider: str = "openrouter"  # "openrouter", "openai", or "lmstudio"
+    provider: str = "openrouter"  # "openrouter" or "lmstudio"
 
 
 # Default config for local models not in the registry (free, optimistic tool support)
@@ -74,16 +74,16 @@ MODELS: dict[str, ModelConfig] = {
         supports_vision=False,
         context_window=64_000,
     ),
-    "text-embedding-3-small": ModelConfig(
-        model_id="text-embedding-3-small",
-        display_name="OpenAI Embedding 3 Small",
+    "openai/text-embedding-3-small": ModelConfig(
+        model_id="openai/text-embedding-3-small",
+        display_name="Text Embedding 3 Small (via OpenRouter)",
         cost_per_1k_input=0.00002,
         cost_per_1k_output=0.0,
         max_tokens=0,
         supports_tools=False,
         supports_vision=False,
         context_window=8191,
-        provider="openai",
+        provider="openrouter",
     ),
 }
 
