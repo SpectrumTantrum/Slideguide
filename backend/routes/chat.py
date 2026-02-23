@@ -18,6 +18,10 @@ from sse_starlette.sse import EventSourceResponse
 
 from backend.agent.graph import compile_graph
 from backend.agent.state import create_initial_state
+from backend.db.repositories.messages import MessageRepository
+from backend.db.repositories.progress import ProgressRepository
+from backend.db.repositories.sessions import SessionRepository
+from backend.db.repositories.uploads import UploadRepository
 from backend.memory.session_memory import SessionMemory
 from backend.memory.student_progress import StudentProgressTracker
 from backend.models.schemas import (
@@ -55,36 +59,34 @@ async def create_session(request: Request, body: CreateSessionRequest):
     Initializes agent state, creates DB records, and returns
     the session ID for subsequent message calls.
     """
-    db = request.app.state.db
+    supabase = request.app.state.supabase
+    upload_repo = UploadRepository(supabase)
+    session_repo = SessionRepository(supabase)
+    msg_repo = MessageRepository(supabase)
 
     # Verify upload exists and is ready
-    upload = await db.upload.find_unique(where={"id": body.upload_id})
+    upload = upload_repo.get_by_id(body.upload_id)
     if not upload:
         raise HTTPException(status_code=404, detail="Upload not found")
-    if upload.status != "READY":
+    if upload["status"] != "READY":
         raise HTTPException(
             status_code=400,
-            detail=f"Upload not ready: {upload.status}",
+            detail=f"Upload not ready: {upload['status']}",
         )
 
     # Create session in database
-    session = await db.session.create(
-        data={
-            "uploadId": body.upload_id,
-            "phase": "GREETING",
-        }
-    )
+    session = session_repo.create(upload_id=body.upload_id, phase="GREETING")
 
     # Create initial progress record
-    progress_tracker = StudentProgressTracker(db)
-    await progress_tracker.get_or_create(session.id, body.upload_id)
+    progress_tracker = StudentProgressTracker(supabase)
+    progress_tracker.get_or_create(session["id"], body.upload_id)
 
     # Initialize graph state (LangGraph persists via checkpointer)
     graph = get_graph()
-    initial_state = create_initial_state(session.id, body.upload_id)
+    initial_state = create_initial_state(session["id"], body.upload_id)
 
     # Run initial greeting turn
-    config = {"configurable": {"thread_id": session.id}}
+    config = {"configurable": {"thread_id": session["id"]}}
     try:
         result = await graph.ainvoke(initial_state, config)
 
@@ -97,18 +99,16 @@ async def create_session(request: Request, body: CreateSessionRequest):
 
         # Persist greeting to database
         if greeting:
-            await db.message.create(
-                data={
-                    "sessionId": session.id,
-                    "role": "ASSISTANT",
-                    "content": greeting,
-                }
+            msg_repo.create(
+                session_id=session["id"],
+                role="ASSISTANT",
+                content=greeting,
             )
 
     except Exception as e:
         logger.error(
             "greeting_generation_failed",
-            session_id=session.id,
+            session_id=session["id"],
             error=str(e),
         )
         greeting = (
@@ -118,12 +118,12 @@ async def create_session(request: Request, body: CreateSessionRequest):
 
     logger.info(
         "session_created",
-        session_id=session.id,
+        session_id=session["id"],
         upload_id=body.upload_id,
     )
 
     return SessionState(
-        session_id=session.id,
+        session_id=session["id"],
         upload_id=body.upload_id,
         phase="greeting",
         message_count=1 if greeting else 0,
@@ -145,20 +145,20 @@ async def send_message(
     The agent graph processes the message through routing, retrieval,
     and generation nodes. The final AI response is streamed token-by-token.
     """
-    db = request.app.state.db
+    supabase = request.app.state.supabase
+    session_repo = SessionRepository(supabase)
+    msg_repo = MessageRepository(supabase)
 
     # Verify session exists
-    session = await db.session.find_unique(where={"id": session_id})
+    session = session_repo.get_by_id(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
     # Persist student message
-    await db.message.create(
-        data={
-            "sessionId": session_id,
-            "role": "USER",
-            "content": body.content,
-        }
+    msg_repo.create(
+        session_id=session_id,
+        role="USER",
+        content=body.content,
     )
 
     logger.info(
@@ -200,7 +200,6 @@ async def send_message(
                 ai_content = "I'm thinking about that. Could you rephrase?"
 
             # Stream the response token by token (simulated chunking)
-            # Real token-by-token streaming requires graph streaming mode
             chunks = _chunk_response(ai_content)
             for chunk in chunks:
                 yield _sse_event("token", {"text": chunk})
@@ -221,13 +220,11 @@ async def send_message(
             yield _sse_event("stream_end", {"finish_reason": "stop"})
 
             # Persist AI response to database
-            await db.message.create(
-                data={
-                    "sessionId": session_id,
-                    "role": "ASSISTANT",
-                    "content": ai_content,
-                    "toolCalls": json.dumps(tool_calls_data) if tool_calls_data else None,
-                }
+            msg_repo.create(
+                session_id=session_id,
+                role="ASSISTANT",
+                content=ai_content,
+                tool_calls=tool_calls_data if tool_calls_data else None,
             )
 
             # Update session phase
@@ -240,20 +237,17 @@ async def send_message(
                 "wrap_up": "WRAP_UP",
             }
             db_phase = phase_map.get(phase, "TEACHING")
-            await db.session.update(
-                where={"id": session_id},
-                data={"phase": db_phase},
-            )
+            session_repo.update(session_id, phase=db_phase)
 
             # Run summarization if needed
             full_messages = result.get("messages", [])
             await _session_memory.maybe_summarize(full_messages, session_id)
 
             # Update progress tracking
-            progress_tracker = StudentProgressTracker(db)
+            progress_tracker = StudentProgressTracker(supabase)
             topics = result.get("topics_covered", [])
             for topic in topics:
-                await progress_tracker.update_topic_covered(session_id, topic)
+                progress_tracker.update_topic_covered(session_id, topic)
 
         except Exception as e:
             logger.error(
@@ -272,36 +266,39 @@ async def send_message(
 @router.get("/{session_id}", response_model=SessionState)
 async def get_session(request: Request, session_id: str):
     """Get the current state of a tutoring session."""
-    db = request.app.state.db
+    supabase = request.app.state.supabase
+    session_repo = SessionRepository(supabase)
+    msg_repo = MessageRepository(supabase)
+    progress_repo = ProgressRepository(supabase)
 
-    session = await db.session.find_unique(
-        where={"id": session_id},
-        include={"progress": True},
-    )
+    session = session_repo.get_by_id(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    message_count = await db.message.count(where={"sessionId": session_id})
+    message_count = msg_repo.count(session_id)
 
-    # Get progress data
+    # Get progress data (separate query — no Prisma includes)
+    progress = progress_repo.get_by_session_id(session_id)
+
     topics_covered: list[str] = []
     quiz_score: dict[str, Any] = {}
-    if session.progress:
-        topics_covered = (
-            json.loads(session.progress.topicsCovered)
-            if session.progress.topicsCovered
-            else []
-        )
+    if progress:
+        # JSONB columns return native Python objects — no json.loads needed
+        topics_covered = progress["topics_covered"] or []
         quiz_score = {
-            "correct": session.progress.correctAnswers,
-            "total": session.progress.totalQuestions,
-            "confidence": session.progress.confidenceLevel,
+            "correct": progress["correct_answers"],
+            "total": progress["total_questions"],
+            "confidence": progress["confidence_level"],
         }
 
+    phase_str = session["phase"]
+    if isinstance(phase_str, str):
+        phase_str = phase_str.lower()
+
     return SessionState(
-        session_id=session.id,
-        upload_id=session.uploadId,
-        phase=session.phase.lower() if hasattr(session.phase, "lower") else str(session.phase).lower(),
+        session_id=session["id"],
+        upload_id=session["upload_id"],
+        phase=phase_str,
         current_slide=None,
         topics_covered=topics_covered,
         quiz_score=quiz_score,
@@ -320,30 +317,26 @@ async def get_history(
     offset: int = 0,
 ):
     """Get message history for a session with pagination."""
-    db = request.app.state.db
+    supabase = request.app.state.supabase
+    session_repo = SessionRepository(supabase)
+    msg_repo = MessageRepository(supabase)
 
-    session = await db.session.find_unique(where={"id": session_id})
+    session = session_repo.get_by_id(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    messages = await db.message.find_many(
-        where={"sessionId": session_id},
-        order={"createdAt": "asc"},
-        take=limit,
-        skip=offset,
-    )
-
-    total = await db.message.count(where={"sessionId": session_id})
+    messages = msg_repo.get_by_session(session_id, limit=limit, offset=offset)
+    total = msg_repo.count(session_id)
 
     return {
         "session_id": session_id,
         "messages": [
             {
-                "id": msg.id,
-                "role": msg.role.lower() if hasattr(msg.role, "lower") else str(msg.role).lower(),
-                "content": msg.content,
-                "tool_calls": json.loads(msg.toolCalls) if msg.toolCalls else None,
-                "created_at": msg.createdAt.isoformat(),
+                "id": msg["id"],
+                "role": msg["role"].lower() if isinstance(msg["role"], str) else str(msg["role"]).lower(),
+                "content": msg["content"],
+                "tool_calls": msg["tool_calls"],  # JSONB — already native
+                "created_at": msg["created_at"],
             }
             for msg in messages
         ],
