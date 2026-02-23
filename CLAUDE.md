@@ -66,6 +66,7 @@ supabase migration new <name>   # Create a new migration
 - **`monitoring/`** — structlog with request ID middleware, health endpoints (`/health/live`, `/health/ready`), cost/error metrics.
 - **`models/`** — Pydantic schemas shared across layers.
 - **`config.py`** — Single `Settings` class (pydantic-settings) loading from `.env`. Properties resolve active model IDs based on selected provider.
+- **`memory/`** — Session context window management (summarizes overflow) and student progress tracking (confidence, quiz scores, coverage). Sits on top of LangGraph checkpointer and Supabase tables.
 
 ### Frontend (`frontend/`)
 
@@ -85,6 +86,10 @@ Three migrations: initial schema, pgvector chunks, and storage bucket setup. Loc
 - **SSE events**: Chat streaming emits `token`, `phase_change`, `error`, `done` event types.
 - **Agent state** (`TutorState`): Append-only messages, phase tracking, student profile (confidence, consecutive correct/incorrect), teaching preferences (explanation mode, pacing level).
 - **Shared instances**: `vectorstore`, `ingestion_pipeline`, `retriever` are module-level singletons in `main.py`, initialized at import time.
+- **Tool compatibility**: `ToolCompatibilityLayer` auto-switches between native (OpenAI format) and prompt-based tool calling after 3 consecutive parse failures. See `llm/tool_compatibility.py`.
+- **LM Studio discovery**: `llm/discovery.py` auto-discovers local models via `/v1/models`, caches 60s. Falls back gracefully if unreachable.
+- **Checkpointing**: LangGraph uses `MemorySaver` (in-memory) by default; `AsyncPostgresSaver` available for persistent state. Thread ID = session ID.
+- **Cost tracking**: Per-model and per-provider token/cost aggregation in `monitoring/metrics.py`. Pricing table for Claude Sonnet/Haiku, DeepSeek, embeddings.
 
 ## Code Style
 
