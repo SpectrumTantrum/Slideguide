@@ -179,15 +179,15 @@ Each capability (chat, embeddings, vision) can be pointed at a different provide
 | Variable | Options | Default |
 |----------|---------|---------|
 | `LLM_PROVIDER` | `openrouter`, `lmstudio` | `openrouter` |
-| `EMBEDDING_PROVIDER` | `openai`, `lmstudio` | `openai` |
+| `EMBEDDING_PROVIDER` | `openrouter`, `lmstudio` | `openrouter` |
 | `VISION_PROVIDER` | `openrouter`, `lmstudio` | `openrouter` |
 
 **Hybrid example** — local chat with cloud embeddings (best quality retrieval, free generation):
 
 ```bash
 LLM_PROVIDER=lmstudio
-EMBEDDING_PROVIDER=openai
-OPENAI_API_KEY=sk-...
+EMBEDDING_PROVIDER=openrouter
+OPENROUTER_API_KEY=sk-or-...
 ```
 
 ### How it works

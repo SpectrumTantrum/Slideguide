@@ -23,15 +23,12 @@ class Settings(BaseSettings):
 
     # Provider selection
     llm_provider: Literal["openrouter", "lmstudio"] = "openrouter"
-    embedding_provider: Literal["openai", "lmstudio"] = "openai"
+    embedding_provider: Literal["openrouter", "lmstudio"] = "openrouter"
     vision_provider: Literal["openrouter", "lmstudio"] = "openrouter"
 
-    # OpenRouter (LLM gateway)
+    # OpenRouter (LLM gateway + embeddings)
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-
-    # OpenAI (embeddings only)
-    openai_api_key: str = ""
 
     # LM Studio (local models)
     lmstudio_base_url: str = "http://localhost:1234/v1"
@@ -44,7 +41,7 @@ class Settings(BaseSettings):
     routing_model: str = "anthropic/claude-haiku-4"
     vision_model: str = "anthropic/claude-sonnet-4"
     fallback_model: str = "deepseek/deepseek-chat-v3"
-    embedding_model: str = "text-embedding-3-small"
+    embedding_model: str = "openai/text-embedding-3-small"
 
     # Supabase
     supabase_url: str = "http://127.0.0.1:54321"

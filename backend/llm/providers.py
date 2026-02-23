@@ -64,10 +64,13 @@ def get_embedding_provider_config() -> ProviderConfig:
             headers={},
         )
     return ProviderConfig(
-        name="openai",
-        base_url="https://api.openai.com/v1",
-        api_key=settings.openai_api_key,
-        headers={},
+        name="openrouter",
+        base_url=settings.openrouter_base_url,
+        api_key=settings.openrouter_api_key,
+        headers={
+            "HTTP-Referer": settings.app_url,
+            "X-Title": settings.app_name,
+        },
     )
 
 
