@@ -23,6 +23,7 @@ from backend.config import settings
 from backend.db.client import get_supabase
 from backend.db.repositories.uploads import UploadRepository
 from backend.db.repositories.slides import SlideRepository
+from backend.db.repositories.storage import StorageRepository
 from backend.models.schemas import (
     ErrorResponse,
     RetrieveRequest,
@@ -171,6 +172,12 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
     upload_id = upload["id"]
     logger.info("upload_created", upload_id=upload_id, filename=filename, size=len(content))
     metrics.total_uploads += 1
+
+    # Upload to Supabase Storage
+    storage_repo = StorageRepository(supabase)
+    content_type = "application/pdf" if ext == ".pdf" else "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    storage_path = storage_repo.upload_file(upload_id, filename, content, content_type)
+    upload_repo.update(upload_id, storage_path=storage_path)
 
     # Save to temp file for parsing
     temp_dir = Path(tempfile.gettempdir()) / "slideguide" / "uploads"
