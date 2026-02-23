@@ -1,5 +1,0 @@
-# SlideGuide uses Supabase CLI for local development.
-# Run: npx supabase start
-#
-# This file is kept for reference but is no longer needed
-# for the core database, vector store, or file storage.

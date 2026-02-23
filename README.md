@@ -40,7 +40,7 @@ graph TB
     Chat -->|SSE Stream| Router
     Router --> Parsers --> RAG
     Router --> Agent
-    Agent -->|Semantic + BM25| RAG
+    Agent -->|Semantic + full-text| RAG
     Agent -->|State Persistence| Memory
     RAG -->|Vector search| Postgres
     RAG --> OpenAI
@@ -61,7 +61,7 @@ graph TB
 | Embeddings | OpenAI text-embedding-3-small or local embedding model | Semantic search vectors |
 | Database | Supabase (PostgreSQL + pgvector) | Vector search, sessions, progress, cost tracking |
 | Storage | Supabase Storage | Uploaded file persistence |
-| RAG | Hybrid search (semantic + BM25) → RRF → MMR | Retrieval pipeline |
+| RAG | Hybrid search (semantic + full-text) → RRF → MMR | Retrieval pipeline |
 
 ## Key Features
 
@@ -81,9 +81,11 @@ graph TB
 
 - Python 3.11+
 - Node.js 18+
+- [Docker](https://docs.docker.com/get-docker/) (required by Supabase CLI)
 - [Supabase CLI](https://supabase.com/docs/guides/cli) (or a hosted Supabase project)
 - OpenRouter API key (cloud mode) **or** [LM Studio](https://lmstudio.ai/) (local mode)
 - OpenAI API key (for embeddings in cloud mode)
+- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) (optional — only needed for OCR on image-heavy slides)
 
 ### 1. Clone and configure
 
@@ -105,6 +107,14 @@ supabase db reset
 ```
 
 This starts PostgreSQL with pgvector (port 54322), Supabase API (port 54321), and Supabase Storage. The migrations create all required tables, enable pgvector, and configure the storage bucket.
+
+After `supabase start` finishes, it prints your local credentials. Copy the `anon key` and `service_role key` values into your `.env`:
+
+```bash
+SUPABASE_URL=http://127.0.0.1:54321
+SUPABASE_ANON_KEY=<anon key from supabase start output>
+SUPABASE_SERVICE_ROLE_KEY=<service_role key from supabase start output>
+```
 
 ### 3. Backend setup
 
@@ -281,7 +291,7 @@ slideguide/
 
 | Skill | Implementation |
 |-------|---------------|
-| **RAG Pipeline** | Hybrid search (semantic + BM25), Reciprocal Rank Fusion, MMR diversity ranking |
+| **RAG Pipeline** | Hybrid search (semantic + PostgreSQL full-text), Reciprocal Rank Fusion, MMR diversity ranking |
 | **Agentic AI** | LangGraph multi-node graph with conditional routing, tool calling, state persistence |
 | **LLM Engineering** | Retry with exponential backoff, circuit breaker, model fallback chain, cost tracking, local LLM support via LM Studio |
 | **Provider Abstraction** | Pluggable provider config, auto-discovery of local models, adaptive tool-calling compatibility layer |
@@ -292,3 +302,23 @@ slideguide/
 | **Observability** | Structured logging (structlog), per-model metrics, health checks (live/ready) |
 | **Database Design** | Supabase (PostgreSQL + pgvector), repository pattern, SQL migrations, Storage API |
 | **Frontend** | Next.js 14, Zustand state, SSE consumption, responsive 3-column layout, dark mode |
+
+## API Reference
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/upload` | Upload a PDF or PPTX file for processing |
+| `GET` | `/api/upload/{upload_id}` | Get upload status and metadata |
+| `GET` | `/api/upload/{upload_id}/slides` | List all slides for an upload |
+| `POST` | `/api/session` | Create a new tutoring session |
+| `GET` | `/api/session/{session_id}` | Get session state |
+| `POST` | `/api/session/{session_id}/message` | Send a message (returns SSE stream) |
+| `GET` | `/api/session/{session_id}/history` | Get chat history for a session |
+| `GET` | `/api/settings/provider` | Get current provider configuration |
+| `GET` | `/api/settings/models` | List available models |
+| `GET` | `/health/live` | Liveness check |
+| `GET` | `/health/ready` | Readiness check |
+
+## License
+
+This project is licensed under the AGPL-3.0 — see [LICENSE](LICENSE) for details.
