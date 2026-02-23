@@ -25,8 +25,11 @@ graph TB
     subgraph External["External Services"]
         OpenRouter[OpenRouter LLM]
         OpenAI[OpenAI Embeddings]
-        Chroma[ChromaDB]
-        Postgres[(PostgreSQL)]
+    end
+
+    subgraph Supabase["Supabase"]
+        Postgres[(PostgreSQL + pgvector)]
+        Storage[Supabase Storage]
     end
 
     subgraph Local["Local (optional)"]
@@ -39,11 +42,12 @@ graph TB
     Router --> Agent
     Agent -->|Semantic + BM25| RAG
     Agent -->|State Persistence| Memory
-    RAG --> Chroma
+    RAG -->|Vector search| Postgres
     RAG --> OpenAI
     Agent --> OpenRouter
     Agent -.->|Local alternative| LMStudio
     Memory --> Postgres
+    Parsers -->|File storage| Storage
 ```
 
 ## Tech Stack
@@ -55,8 +59,8 @@ graph TB
 | Agent | LangGraph | Multi-node stateful tutoring agent |
 | LLM | OpenRouter (Claude Sonnet/Haiku, DeepSeek fallback) or LM Studio (local) | Reasoning and generation |
 | Embeddings | OpenAI text-embedding-3-small or local embedding model | Semantic search vectors |
-| Vector DB | ChromaDB | Semantic similarity search |
-| Database | PostgreSQL + Prisma | Session, progress, cost tracking |
+| Database | Supabase (PostgreSQL + pgvector) | Vector search, sessions, progress, cost tracking |
+| Storage | Supabase Storage | Uploaded file persistence |
 | RAG | Hybrid search (semantic + BM25) → RRF → MMR | Retrieval pipeline |
 
 ## Key Features
@@ -77,7 +81,7 @@ graph TB
 
 - Python 3.11+
 - Node.js 18+
-- Docker and Docker Compose
+- [Supabase CLI](https://supabase.com/docs/guides/cli) (or a hosted Supabase project)
 - OpenRouter API key (cloud mode) **or** [LM Studio](https://lmstudio.ai/) (local mode)
 - OpenAI API key (for embeddings in cloud mode)
 
@@ -87,26 +91,26 @@ graph TB
 git clone https://github.com/yourusername/slideguide.git
 cd slideguide
 cp .env.example .env
-# Edit .env with your API keys
+# Edit .env with your API keys and Supabase credentials
 ```
 
-### 2. Start infrastructure
+### 2. Start Supabase
 
 ```bash
-docker compose up -d
+# Start local Supabase (runs PostgreSQL with pgvector, Storage, and more)
+supabase start
+
+# Apply database migrations
+supabase db reset
 ```
 
-This starts PostgreSQL (port 5432) and ChromaDB (port 8000).
+This starts PostgreSQL with pgvector (port 54322), Supabase API (port 54321), and Supabase Storage. The migrations create all required tables, enable pgvector, and configure the storage bucket.
 
 ### 3. Backend setup
 
 ```bash
 # Install Python dependencies
 pip install -e ".[dev]"
-
-# Generate Prisma client and run migrations
-prisma generate
-prisma db push
 
 # Start the API server
 uvicorn backend.main:app --reload --port 8000
@@ -204,7 +208,7 @@ You should see:
 
 ### Tips
 
-- **RAM**: 7B models need ~6 GB RAM, 13B models need ~10 GB. Keep this in mind alongside ChromaDB and PostgreSQL.
+- **RAM**: 7B models need ~6 GB RAM, 13B models need ~10 GB. Keep this in mind alongside Supabase services.
 - **GPU offloading**: Enable GPU layers in LM Studio for much faster inference.
 - **Routing model**: If unset, the primary model handles both reasoning and routing. For faster routing, load a smaller model and set `LMSTUDIO_ROUTING_MODEL` to its name.
 - **Embedding model**: Must be loaded separately in LM Studio alongside your chat model. If you skip local embeddings, keep `EMBEDDING_PROVIDER=openai` — OpenAI's embeddings are cheap and high quality.
@@ -220,6 +224,16 @@ slideguide/
 │   │   ├── prompts.py  # Neurodivergent-friendly prompt templates
 │   │   ├── state.py    # TutorState schema
 │   │   └── tools.py    # 7 agent tools (search, quiz, progress, etc.)
+│   ├── db/             # Supabase data layer
+│   │   ├── client.py   # Supabase client singleton
+│   │   └── repositories/
+│   │       ├── chunks.py    # pgvector chunk storage + search
+│   │       ├── messages.py  # Chat history CRUD
+│   │       ├── progress.py  # Student progress CRUD
+│   │       ├── sessions.py  # Session CRUD
+│   │       ├── slides.py    # Slide content CRUD
+│   │       ├── storage.py   # Supabase Storage operations
+│   │       └── uploads.py   # Upload metadata CRUD
 │   ├── llm/            # LLM clients
 │   │   ├── client.py   # OpenRouter with retry + circuit breaker
 │   │   ├── discovery.py # LM Studio model auto-discovery
@@ -242,8 +256,8 @@ slideguide/
 │   │   ├── pptx_parser.py  # python-pptx
 │   │   └── ocr.py          # Tesseract + VLM fallback
 │   ├── rag/            # Retrieval pipeline
-│   │   ├── vectorstore.py  # ChromaDB wrapper
-│   │   ├── ingestion.py    # Chunking + embedding + BM25 index
+│   │   ├── vectorstore.py  # pgvector wrapper via Supabase
+│   │   ├── ingestion.py    # Chunking + embedding
 │   │   ├── retriever.py    # Hybrid search → RRF → MMR
 │   │   └── evaluation.py   # Retrieval metrics logging
 │   ├── routes/
@@ -256,10 +270,10 @@ slideguide/
 │   ├── components/     # React components
 │   ├── lib/            # API client, store, types, utils
 │   └── package.json
-├── database/
-│   └── schema.prisma   # Database schema
+├── supabase/
+│   ├── config.toml     # Local Supabase CLI config
+│   └── migrations/     # SQL migrations (schema, pgvector, storage)
 ├── tests/              # Python tests
-├── docker-compose.yml  # PostgreSQL + ChromaDB
 └── pyproject.toml      # Python project config
 ```
 
@@ -276,5 +290,5 @@ slideguide/
 | **Multimodal** | VLM image descriptions for charts/diagrams, base64 encoding, context injection |
 | **Streaming** | SSE token-by-token streaming, tool call assembly, heartbeat keepalive |
 | **Observability** | Structured logging (structlog), per-model metrics, health checks (live/ready) |
-| **Database Design** | Prisma ORM, PostgreSQL, session/progress/cost models, cascade deletes |
+| **Database Design** | Supabase (PostgreSQL + pgvector), repository pattern, SQL migrations, Storage API |
 | **Frontend** | Next.js 14, Zustand state, SSE consumption, responsive 3-column layout, dark mode |
