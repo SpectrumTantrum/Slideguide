@@ -46,12 +46,10 @@ class Settings(BaseSettings):
     fallback_model: str = "deepseek/deepseek-chat-v3"
     embedding_model: str = "text-embedding-3-small"
 
-    # Database
-    database_url: str = "postgresql://postgres:postgres@localhost:5432/slideguide"
-
-    # ChromaDB
-    chromadb_host: str = "localhost"
-    chromadb_port: int = 8000
+    # Supabase
+    supabase_url: str = "http://127.0.0.1:54321"
+    supabase_anon_key: str = ""
+    supabase_service_role_key: str = ""
 
     # Tesseract OCR
     tesseract_cmd: str = "tesseract"
@@ -101,10 +99,6 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
-
-    @property
-    def chromadb_url(self) -> str:
-        return f"http://{self.chromadb_host}:{self.chromadb_port}"
 
     @property
     def max_upload_bytes(self) -> int:

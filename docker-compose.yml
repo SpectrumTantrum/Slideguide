@@ -1,30 +1,5 @@
-services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: slideguide
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  chromadb:
-    image: chromadb/chroma:latest
-    ports:
-      - "8000:8000"
-    volumes:
-      - chroma_data:/chroma/chroma
-    environment:
-      - IS_PERSISTENT=TRUE
-      - ANONYMIZED_TELEMETRY=FALSE
-
-volumes:
-  postgres_data:
-  chroma_data:
+# SlideGuide uses Supabase CLI for local development.
+# Run: npx supabase start
+#
+# This file is kept for reference but is no longer needed
+# for the core database, vector store, or file storage.

@@ -1,9 +1,9 @@
 """
 RAG ingestion pipeline: chunking, embedding, and indexing.
 
-Takes a ParsedDocument and produces:
-1. Embedded chunks in ChromaDB (for semantic search)
-2. A BM25 index (for keyword search)
+Takes a ParsedDocument and produces embedded chunks stored in
+pgvector (via Supabase). Full-text search uses auto-generated
+tsvector columns — no separate index build needed.
 
 Chunking is slide-aware: chunks never cross slide boundaries.
 """
@@ -11,13 +11,7 @@ Chunking is slide-aware: chunks never cross slide boundaries.
 from __future__ import annotations
 
 import hashlib
-import json
-import pickle
-import tempfile
-from pathlib import Path
 from typing import Any
-
-import numpy as np
 
 from backend.config import settings
 from backend.models.schemas import ChunkMetadata, ParsedDocument, SlideContent
@@ -28,13 +22,13 @@ from backend.rag.vectorstore import VectorStore
 logger = get_logger(__name__)
 
 # Chunking config
-CHUNK_SIZE = 500  # Target tokens (~4 chars per token ≈ 2000 chars)
+CHUNK_SIZE = 500  # Target tokens (~4 chars per token ~ 2000 chars)
 CHUNK_OVERLAP = 50  # Overlap tokens (~200 chars)
 CHARS_PER_TOKEN = 4
 
 
 class IngestionPipeline:
-    """Ingest parsed documents into the vector store and BM25 index."""
+    """Ingest parsed documents into the pgvector store."""
 
     def __init__(self, vectorstore: VectorStore) -> None:
         self.vectorstore = vectorstore
@@ -54,7 +48,7 @@ class IngestionPipeline:
 
     async def ingest(self, parsed_doc: ParsedDocument) -> int:
         """
-        Ingest a parsed document: chunk → embed → store.
+        Ingest a parsed document: chunk -> embed -> store.
 
         Returns the total number of chunks created.
         """
@@ -78,11 +72,8 @@ class IngestionPipeline:
             for chunk, embedding in zip(all_chunks, embeddings):
                 chunk["embedding"] = embedding
 
-            # Step 4: Store in ChromaDB
+            # Step 4: Store in pgvector (tsvector for FTS is auto-generated)
             self.vectorstore.add_chunks(upload_id, all_chunks)
-
-            # Step 5: Build BM25 index
-            self._build_bm25_index(upload_id, all_chunks)
 
         logger.info(
             "ingestion_complete",
@@ -181,7 +172,6 @@ class IngestionPipeline:
 
             # Try to break at sentence boundary
             if end < len(text):
-                # Look for sentence endings near the boundary
                 for sep in [". ", ".\n", "\n\n", "\n", " "]:
                     break_pos = text.rfind(sep, start + max_chars // 2, end)
                     if break_pos != -1:
@@ -231,43 +221,6 @@ class IngestionPipeline:
 
         logger.debug("embeddings_generated", total_texts=len(texts), model=model)
         return all_embeddings
-
-    def _build_bm25_index(
-        self, upload_id: str, chunks: list[dict[str, Any]]
-    ) -> None:
-        """
-        Build and persist a BM25 index for keyword search.
-
-        Stored as a pickle file keyed by upload_id.
-        """
-        from rank_bm25 import BM25Okapi
-
-        documents = [c["document"] for c in chunks]
-        # Tokenize by splitting on whitespace (simple but effective)
-        tokenized = [doc.lower().split() for doc in documents]
-
-        bm25 = BM25Okapi(tokenized)
-
-        # Save index and document mapping
-        index_data = {
-            "bm25": bm25,
-            "documents": documents,
-            "metadatas": [c["metadata"] for c in chunks],
-            "chunk_ids": [c["id"] for c in chunks],
-        }
-
-        index_path = self._bm25_index_path(upload_id)
-        index_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(index_path, "wb") as f:
-            pickle.dump(index_data, f)
-
-        logger.info("bm25_index_built", upload_id=upload_id, documents=len(documents))
-
-    @staticmethod
-    def _bm25_index_path(upload_id: str) -> Path:
-        """Get the file path for a BM25 index."""
-        return Path(tempfile.gettempdir()) / "slideguide" / "bm25" / f"{upload_id}.pkl"
 
     @staticmethod
     def _make_chunk_id(upload_id: str, slide_number: int, chunk_index: int) -> str:

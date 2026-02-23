@@ -1,17 +1,17 @@
 """
-Long-term student progress tracking via PostgreSQL.
+Long-term student progress tracking via Supabase PostgreSQL.
 
 Persists learning progress across sessions: topics covered,
 quiz scores, confidence levels, and study recommendations.
-All data stored via Prisma ORM in the StudentProgress model.
+All data stored via Supabase in the student_progress table.
 """
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from typing import Any
 
+from backend.db.repositories.progress import ProgressRepository
 from backend.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
@@ -28,38 +28,34 @@ class StudentProgressTracker:
     """
     Track and query student learning progress.
 
-    Backed by the Prisma StudentProgress model for persistence.
+    Backed by Supabase student_progress table for persistence.
     Provides methods for updating scores, computing confidence,
     and suggesting what to study next.
     """
 
-    def __init__(self, db: Any) -> None:
-        """Initialize with a connected Prisma client."""
-        self.db = db
+    def __init__(self, supabase: Any) -> None:
+        """Initialize with a Supabase client."""
+        self.repo = ProgressRepository(supabase)
 
-    async def get_or_create(
+    def get_or_create(
         self,
         session_id: str,
         upload_id: str,
     ) -> dict[str, Any]:
         """Get existing progress or create a new record."""
-        progress = await self.db.studentprogress.find_unique(
-            where={"sessionId": session_id},
-        )
+        progress = self.repo.get_by_session_id(session_id)
 
         if progress:
             return self._to_dict(progress)
 
-        progress = await self.db.studentprogress.create(
-            data={
-                "sessionId": session_id,
-                "uploadId": upload_id,
-                "topicsCovered": json.dumps([]),
-                "quizScores": json.dumps({}),
-                "totalQuestions": 0,
-                "correctAnswers": 0,
-                "confidenceLevel": 0.0,
-            },
+        progress = self.repo.create(
+            session_id=session_id,
+            upload_id=upload_id,
+            topics_covered=[],
+            quiz_scores={},
+            total_questions=0,
+            correct_answers=0,
+            confidence_level=0.0,
         )
 
         logger.info(
@@ -70,30 +66,27 @@ class StudentProgressTracker:
 
         return self._to_dict(progress)
 
-    async def update_topic_covered(
+    def update_topic_covered(
         self,
         session_id: str,
         topic: str,
     ) -> None:
         """Mark a topic as covered in this session."""
-        progress = await self.db.studentprogress.find_unique(
-            where={"sessionId": session_id},
-        )
+        progress = self.repo.get_by_session_id(session_id)
         if not progress:
             return
 
-        topics = json.loads(progress.topicsCovered) if progress.topicsCovered else []
+        # JSONB returns native list — no json.loads needed
+        topics = progress["topics_covered"] or []
         if topic not in topics:
             topics.append(topic)
-            await self.db.studentprogress.update(
-                where={"sessionId": session_id},
-                data={
-                    "topicsCovered": json.dumps(topics),
-                    "lastActive": datetime.now(),
-                },
+            self.repo.update_by_session_id(
+                session_id,
+                topics_covered=topics,
+                last_active=datetime.now().isoformat(),
             )
 
-    async def record_quiz_result(
+    def record_quiz_result(
         self,
         session_id: str,
         topic: str,
@@ -105,15 +98,14 @@ class StudentProgressTracker:
 
         Returns the updated quiz score summary.
         """
-        progress = await self.db.studentprogress.find_unique(
-            where={"sessionId": session_id},
-        )
+        progress = self.repo.get_by_session_id(session_id)
         if not progress:
             return {"correct": 0, "total": 0}
 
-        scores = json.loads(progress.quizScores) if progress.quizScores else {}
-        total = progress.totalQuestions + 1
-        correct = progress.correctAnswers + (1 if is_correct else 0)
+        # JSONB returns native dict — no json.loads needed
+        scores = progress["quiz_scores"] or {}
+        total = progress["total_questions"] + 1
+        correct = progress["correct_answers"] + (1 if is_correct else 0)
 
         # Track per-topic scores
         if topic not in scores:
@@ -127,15 +119,13 @@ class StudentProgressTracker:
         # Recompute confidence
         confidence = self._compute_confidence(correct, total, scores)
 
-        await self.db.studentprogress.update(
-            where={"sessionId": session_id},
-            data={
-                "quizScores": json.dumps(scores),
-                "totalQuestions": total,
-                "correctAnswers": correct,
-                "confidenceLevel": confidence,
-                "lastActive": datetime.now(),
-            },
+        self.repo.update_by_session_id(
+            session_id,
+            quiz_scores=scores,
+            total_questions=total,
+            correct_answers=correct,
+            confidence_level=confidence,
+            last_active=datetime.now().isoformat(),
         )
 
         logger.info(
@@ -155,17 +145,15 @@ class StudentProgressTracker:
             "confidence": confidence,
         }
 
-    async def get_progress(self, session_id: str) -> dict[str, Any] | None:
+    def get_progress(self, session_id: str) -> dict[str, Any] | None:
         """Get full progress data for a session."""
-        progress = await self.db.studentprogress.find_unique(
-            where={"sessionId": session_id},
-        )
+        progress = self.repo.get_by_session_id(session_id)
         if not progress:
             return None
 
         return self._to_dict(progress)
 
-    async def suggest_next_topic(
+    def suggest_next_topic(
         self,
         session_id: str,
         available_topics: list[str],
@@ -175,14 +163,12 @@ class StudentProgressTracker:
 
         Priority: uncovered topics > low-confidence topics > least-recent topics.
         """
-        progress = await self.db.studentprogress.find_unique(
-            where={"sessionId": session_id},
-        )
+        progress = self.repo.get_by_session_id(session_id)
         if not progress:
             return available_topics[0] if available_topics else None
 
-        covered = json.loads(progress.topicsCovered) if progress.topicsCovered else []
-        scores = json.loads(progress.quizScores) if progress.quizScores else {}
+        covered = progress["topics_covered"] or []
+        scores = progress["quiz_scores"] or {}
 
         # Priority 1: topics not yet covered
         uncovered = [t for t in available_topics if t not in covered]
@@ -198,9 +184,8 @@ class StudentProgressTracker:
 
         if topic_accuracy:
             topic_accuracy.sort(key=lambda x: x[1])
-            # Suggest the weakest topic
             weakest = topic_accuracy[0]
-            if weakest[1] < 0.8:  # Only suggest if accuracy below 80%
+            if weakest[1] < 0.8:
                 return weakest[0]
 
         # Priority 3: first available topic for review
@@ -219,14 +204,10 @@ class StudentProgressTracker:
         Requires minimum attempts before confidence is meaningful.
         """
         if total < MIN_QUIZ_ATTEMPTS:
-            # Not enough data — return a scaled preliminary score
             return (correct / max(total, 1)) * 0.3
 
-        # Quiz accuracy component (0-1)
         quiz_accuracy = correct / total
 
-        # Topic coverage component: what fraction of quizzed topics
-        # have accuracy >= 70%?
         topics_with_scores = [
             t for t in by_topic.values() if t.get("total", 0) > 0
         ]
@@ -243,18 +224,15 @@ class StudentProgressTracker:
         return min(max(confidence, 0.0), 1.0)
 
     @staticmethod
-    def _to_dict(progress: Any) -> dict[str, Any]:
-        """Convert a Prisma StudentProgress record to a plain dict."""
-        topics = json.loads(progress.topicsCovered) if progress.topicsCovered else []
-        scores = json.loads(progress.quizScores) if progress.quizScores else {}
-
+    def _to_dict(progress: dict) -> dict[str, Any]:
+        """Convert a student_progress row dict to a standard dict."""
         return {
-            "session_id": progress.sessionId,
-            "upload_id": progress.uploadId,
-            "topics_covered": topics,
-            "quiz_scores": scores,
-            "total_questions": progress.totalQuestions,
-            "correct_answers": progress.correctAnswers,
-            "confidence_level": progress.confidenceLevel,
-            "last_active": progress.lastActive.isoformat() if progress.lastActive else None,
+            "session_id": progress["session_id"],
+            "upload_id": progress["upload_id"],
+            "topics_covered": progress["topics_covered"] or [],
+            "quiz_scores": progress["quiz_scores"] or {},
+            "total_questions": progress["total_questions"],
+            "correct_answers": progress["correct_answers"],
+            "confidence_level": progress["confidence_level"],
+            "last_active": progress["last_active"],
         }

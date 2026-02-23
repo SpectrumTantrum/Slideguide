@@ -69,28 +69,22 @@ async def get_slide_content(upload_id: str, slide_number: int) -> dict[str, Any]
 
     Returns slide text, title, images status, and speaker notes.
     """
-    from prisma import Prisma
+    from backend.db.client import get_supabase
+    from backend.db.repositories.slides import SlideRepository
 
-    db = Prisma()
-    await db.connect()
+    repo = SlideRepository(get_supabase())
+    slide = repo.get_by_upload_and_number(upload_id, slide_number)
 
-    try:
-        slide = await db.slide.find_first(
-            where={"uploadId": upload_id, "slideNumber": slide_number}
-        )
+    if not slide:
+        return {"error": f"Slide {slide_number} not found"}
 
-        if not slide:
-            return {"error": f"Slide {slide_number} not found"}
-
-        return {
-            "slide_number": slide.slideNumber,
-            "title": slide.title,
-            "text_content": slide.textContent,
-            "has_images": slide.hasImages,
-            "metadata": slide.metadata,
-        }
-    finally:
-        await db.disconnect()
+    return {
+        "slide_number": slide["slide_number"],
+        "title": slide["title"],
+        "text_content": slide["text_content"],
+        "has_images": slide["has_images"],
+        "metadata": slide["metadata"],
+    }
 
 
 async def generate_quiz_question(
@@ -231,34 +225,28 @@ async def get_student_progress(session_id: str) -> dict[str, Any]:
 
     Returns topics covered, quiz scores, and confidence level.
     """
-    from prisma import Prisma
+    from backend.db.client import get_supabase
+    from backend.db.repositories.progress import ProgressRepository
 
-    db = Prisma()
-    await db.connect()
+    repo = ProgressRepository(get_supabase())
+    progress = repo.get_by_session_id(session_id)
 
-    try:
-        progress = await db.studentprogress.find_unique(
-            where={"sessionId": session_id}
-        )
-
-        if not progress:
-            return {
-                "topics_covered": [],
-                "quiz_scores": {},
-                "total_questions": 0,
-                "correct_answers": 0,
-                "confidence_level": 0.5,
-            }
-
+    if not progress:
         return {
-            "topics_covered": progress.topicsCovered,
-            "quiz_scores": progress.quizScores,
-            "total_questions": progress.totalQuestions,
-            "correct_answers": progress.correctAnswers,
-            "confidence_level": progress.confidenceLevel,
+            "topics_covered": [],
+            "quiz_scores": {},
+            "total_questions": 0,
+            "correct_answers": 0,
+            "confidence_level": 0.5,
         }
-    finally:
-        await db.disconnect()
+
+    return {
+        "topics_covered": progress["topics_covered"] or [],
+        "quiz_scores": progress["quiz_scores"] or {},
+        "total_questions": progress["total_questions"],
+        "correct_answers": progress["correct_answers"],
+        "confidence_level": progress["confidence_level"],
+    }
 
 
 async def extract_slide_image(
@@ -271,47 +259,41 @@ async def extract_slide_image(
 
     Returns the image path and a text description of its content.
     """
-    from prisma import Prisma
+    from backend.db.client import get_supabase
+    from backend.db.repositories.slides import SlideRepository
 
-    db = Prisma()
-    await db.connect()
+    repo = SlideRepository(get_supabase())
+    slide = repo.get_by_upload_and_number(upload_id, slide_number)
 
+    if not slide or not slide["image_paths"]:
+        return {"error": "No images found on this slide"}
+
+    paths = slide["image_paths"] if isinstance(slide["image_paths"], list) else []
+    if image_index >= len(paths):
+        return {"error": f"Image index {image_index} out of range (has {len(paths)})"}
+
+    image_path = paths[image_index]
+
+    # Try VLM description
     try:
-        slide = await db.slide.find_first(
-            where={"uploadId": upload_id, "slideNumber": slide_number}
+        from backend.llm.vision import VisionClient
+
+        vision = VisionClient()
+        description = await vision.describe_image(
+            image_path, context=slide["text_content"] or ""
+        )
+    except (ImportError, Exception):
+        description = (
+            f"Image from slide {slide_number}. "
+            "Visual description will be available after VLM integration."
         )
 
-        if not slide or not slide.imagePaths:
-            return {"error": "No images found on this slide"}
-
-        paths = slide.imagePaths if isinstance(slide.imagePaths, list) else []
-        if image_index >= len(paths):
-            return {"error": f"Image index {image_index} out of range (has {len(paths)})"}
-
-        image_path = paths[image_index]
-
-        # Try VLM description (Phase 3 will add real implementation)
-        try:
-            from backend.llm.vision import VisionClient
-
-            vision = VisionClient()
-            description = await vision.describe_image(
-                image_path, context=slide.textContent or ""
-            )
-        except (ImportError, Exception):
-            description = (
-                f"Image from slide {slide_number}. "
-                "Visual description will be available after VLM integration."
-            )
-
-        return {
-            "slide_number": slide_number,
-            "image_index": image_index,
-            "image_path": image_path,
-            "description": description,
-        }
-    finally:
-        await db.disconnect()
+    return {
+        "slide_number": slide_number,
+        "image_index": image_index,
+        "image_path": image_path,
+        "description": description,
+    }
 
 
 async def lookup_prerequisite(

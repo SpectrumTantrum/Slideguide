@@ -65,7 +65,6 @@ def configure_logging() -> None:
 
     # Quiet noisy libraries
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("chromadb").setLevel(logging.WARNING)
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
     _configured = True

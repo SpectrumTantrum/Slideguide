@@ -2,7 +2,7 @@
 FastAPI application entry point for SlideGuide.
 
 Provides file upload, document processing, retrieval, and
-tutoring chat endpoints. Initializes Prisma, ChromaDB, and
+tutoring chat endpoints. Initializes Supabase, vector store, and
 LLM clients on startup.
 """
 
@@ -20,6 +20,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import settings
+from backend.db.client import get_supabase
+from backend.db.repositories.uploads import UploadRepository
+from backend.db.repositories.slides import SlideRepository
+from backend.db.repositories.storage import StorageRepository
 from backend.models.schemas import (
     ErrorResponse,
     RetrieveRequest,
@@ -50,18 +54,12 @@ async def lifespan(app: FastAPI):
     configure_logging()
     logger.info("app_starting", environment=settings.environment)
 
-    # Connect Prisma
-    from prisma import Prisma
-
-    db = Prisma()
-    await db.connect()
-    app.state.db = db
-    logger.info("prisma_connected")
+    # Initialize Supabase client
+    app.state.supabase = get_supabase()
+    logger.info("supabase_connected")
 
     yield
 
-    # Cleanup
-    await db.disconnect()
     logger.info("app_shutdown")
 
 
@@ -145,7 +143,9 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
     The file is parsed, chunked, embedded, and stored in the vector database.
     Returns upload metadata including the upload_id for subsequent queries.
     """
-    db = request.app.state.db
+    supabase = request.app.state.supabase
+    upload_repo = UploadRepository(supabase)
+    slide_repo = SlideRepository(supabase)
 
     # Validate file type
     filename = file.filename or "unknown"
@@ -162,70 +162,72 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
         )
 
     # Create upload record
-    upload = await db.upload.create(
-        data={
-            "filename": filename,
-            "fileType": ext.lstrip("."),
-            "fileSize": len(content),
-            "status": "PROCESSING",
-        }
+    upload = upload_repo.create(
+        filename=filename,
+        file_type=ext.lstrip("."),
+        file_size=len(content),
+        status="PROCESSING",
     )
 
-    logger.info("upload_created", upload_id=upload.id, filename=filename, size=len(content))
+    upload_id = upload["id"]
+    logger.info("upload_created", upload_id=upload_id, filename=filename, size=len(content))
     metrics.total_uploads += 1
+
+    # Upload to Supabase Storage
+    storage_repo = StorageRepository(supabase)
+    content_type = "application/pdf" if ext == ".pdf" else "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    storage_path = storage_repo.upload_file(upload_id, filename, content, content_type)
+    upload_repo.update(upload_id, storage_path=storage_path)
 
     # Save to temp file for parsing
     temp_dir = Path(tempfile.gettempdir()) / "slideguide" / "uploads"
     temp_dir.mkdir(parents=True, exist_ok=True)
-    temp_path = temp_dir / f"{upload.id}{ext}"
+    temp_path = temp_dir / f"{upload_id}{ext}"
     temp_path.write_bytes(content)
 
     try:
         # Parse document
         from backend.parsers import parse_document
 
-        parsed = await parse_document(str(temp_path), upload.id)
+        parsed = await parse_document(str(temp_path), upload_id)
 
         # Store slides in database
         for slide in parsed.slides:
-            await db.slide.create(
-                data={
-                    "uploadId": upload.id,
-                    "slideNumber": slide.slide_number,
-                    "title": slide.title,
-                    "textContent": slide.text_content,
-                    "hasImages": slide.has_images,
-                    "imagePaths": slide.image_paths,
-                    "metadata": slide.metadata,
-                }
+            slide_repo.create(
+                upload_id=upload_id,
+                slide_number=slide.slide_number,
+                title=slide.title,
+                text_content=slide.text_content,
+                has_images=slide.has_images,
+                image_paths=slide.image_paths,
+                metadata=slide.metadata,
             )
 
         # Ingest into RAG pipeline
         chunk_count = await ingestion_pipeline.ingest(parsed)
 
         # Update upload status
-        upload = await db.upload.update(
-            where={"id": upload.id},
-            data={
-                "status": "READY",
-                "totalSlides": parsed.total_slides,
-                "metadata": {"chunk_count": chunk_count},
-            },
+        upload = upload_repo.update(
+            upload_id,
+            status="READY",
+            total_slides=parsed.total_slides,
+            metadata={"chunk_count": chunk_count},
         )
 
         logger.info(
             "upload_processed",
-            upload_id=upload.id,
+            upload_id=upload_id,
             total_slides=parsed.total_slides,
             chunks=chunk_count,
         )
 
     except Exception as e:
-        await db.upload.update(
-            where={"id": upload.id},
-            data={"status": "ERROR", "metadata": {"error": str(e)}},
+        upload_repo.update(
+            upload_id,
+            status="ERROR",
+            metadata={"error": str(e)},
         )
-        logger.error("upload_processing_failed", upload_id=upload.id, error=str(e))
+        logger.error("upload_processing_failed", upload_id=upload_id, error=str(e))
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
     finally:
@@ -233,58 +235,59 @@ async def upload_file(request: Request, file: UploadFile = File(...)):
         temp_path.unlink(missing_ok=True)
 
     return UploadResponse(
-        id=upload.id,
-        filename=upload.filename,
-        file_type=upload.fileType,
-        status=upload.status,
-        total_slides=upload.totalSlides,
-        created_at=upload.createdAt,
+        id=upload["id"],
+        filename=upload["filename"],
+        file_type=upload["file_type"],
+        status=upload["status"],
+        total_slides=upload["total_slides"],
+        created_at=upload["created_at"],
     )
 
 
 @app.get("/api/upload/{upload_id}")
 async def get_upload(request: Request, upload_id: str):
     """Get upload status and metadata."""
-    db = request.app.state.db
-    upload = await db.upload.find_unique(where={"id": upload_id})
+    supabase = request.app.state.supabase
+    upload_repo = UploadRepository(supabase)
+
+    upload = upload_repo.get_by_id(upload_id)
     if not upload:
         raise HTTPException(status_code=404, detail="Upload not found")
 
     return {
-        "id": upload.id,
-        "filename": upload.filename,
-        "file_type": upload.fileType,
-        "file_size": upload.fileSize,
-        "status": upload.status,
-        "total_slides": upload.totalSlides,
-        "metadata": upload.metadata,
-        "created_at": upload.createdAt.isoformat(),
+        "id": upload["id"],
+        "filename": upload["filename"],
+        "file_type": upload["file_type"],
+        "file_size": upload["file_size"],
+        "status": upload["status"],
+        "total_slides": upload["total_slides"],
+        "metadata": upload["metadata"],
+        "created_at": upload["created_at"],
     }
 
 
 @app.get("/api/upload/{upload_id}/slides")
 async def get_slides(request: Request, upload_id: str):
     """Get all slides for an upload."""
-    db = request.app.state.db
+    supabase = request.app.state.supabase
+    upload_repo = UploadRepository(supabase)
+    slide_repo = SlideRepository(supabase)
 
-    upload = await db.upload.find_unique(where={"id": upload_id})
+    upload = upload_repo.get_by_id(upload_id)
     if not upload:
         raise HTTPException(status_code=404, detail="Upload not found")
 
-    slides = await db.slide.find_many(
-        where={"uploadId": upload_id},
-        order={"slideNumber": "asc"},
-    )
+    slides = slide_repo.get_by_upload(upload_id)
 
     return {
         "upload_id": upload_id,
         "total_slides": len(slides),
         "slides": [
             {
-                "slide_number": s.slideNumber,
-                "title": s.title,
-                "text_content": s.textContent,
-                "has_images": s.hasImages,
+                "slide_number": s["slide_number"],
+                "title": s["title"],
+                "text_content": s["text_content"],
+                "has_images": s["has_images"],
             }
             for s in slides
         ],
@@ -299,17 +302,18 @@ async def retrieve(request: Request, body: RetrieveRequest):
     """
     Search the knowledge base for content relevant to a query.
 
-    Uses hybrid search (semantic + BM25) with RRF fusion and MMR diversity.
+    Uses hybrid search (semantic + keyword) with RRF fusion and MMR diversity.
     Returns ranked results with slide citations.
     """
-    db = request.app.state.db
+    supabase = request.app.state.supabase
+    upload_repo = UploadRepository(supabase)
 
     # Verify upload exists and is ready
-    upload = await db.upload.find_unique(where={"id": body.upload_id})
+    upload = upload_repo.get_by_id(body.upload_id)
     if not upload:
         raise HTTPException(status_code=404, detail="Upload not found")
-    if upload.status != "READY":
-        raise HTTPException(status_code=400, detail=f"Upload not ready: {upload.status}")
+    if upload["status"] != "READY":
+        raise HTTPException(status_code=400, detail=f"Upload not ready: {upload['status']}")
 
     # Apply slide range filter
     slide_filter = None
