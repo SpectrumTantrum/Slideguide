@@ -20,25 +20,14 @@ from backend.monitoring.metrics import metrics
 router = APIRouter(tags=["monitoring"])
 
 
-async def _check_chromadb() -> str:
-    """Check ChromaDB connectivity."""
+def _check_supabase() -> str:
+    """Check Supabase PostgreSQL connectivity."""
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{settings.chromadb_url}/api/v1/heartbeat")
-            return "ok" if resp.status_code == 200 else "degraded"
-    except Exception:
-        return "unavailable"
+        from backend.db.client import get_supabase
 
-
-async def _check_postgres() -> str:
-    """Check PostgreSQL connectivity via Prisma."""
-    try:
-        from prisma import Prisma
-
-        db = Prisma()
-        await db.connect()
-        await db.execute_raw("SELECT 1")
-        await db.disconnect()
+        supabase = get_supabase()
+        result = supabase.table("uploads").select("id").limit(1).execute()
+        # If we get here without exception, the connection works
         return "ok"
     except Exception:
         return "unavailable"
@@ -70,8 +59,7 @@ async def _check_lmstudio() -> dict:
 async def health_check() -> dict:
     """Full health check with all dependency statuses."""
     checks: dict = {
-        "chromadb": await _check_chromadb(),
-        "postgres": await _check_postgres(),
+        "supabase": _check_supabase(),
     }
 
     # Check the active LLM provider
@@ -89,8 +77,8 @@ async def health_check() -> dict:
         v == "ok" for k, v in checks.items()
         if isinstance(v, str) and k != "lmstudio_models"
     )
-    # Postgres is always required; LM Studio is critical when it's the LLM provider
-    critical_ok = checks["postgres"] == "ok"
+    # Supabase is always required; LM Studio is critical when it's the LLM provider
+    critical_ok = checks["supabase"] == "ok"
     if settings.llm_provider == "lmstudio":
         critical_ok = critical_ok and checks.get("lmstudio") == "ok"
 
@@ -121,16 +109,16 @@ async def readiness() -> dict:
     """
     Kubernetes readiness probe — can we serve traffic?
 
-    Checks that critical dependencies (Postgres) are available.
+    Checks that critical dependencies (Supabase) are available.
     """
-    postgres_status = await _check_postgres()
-    is_ready = postgres_status == "ok"
+    supabase_status = _check_supabase()
+    is_ready = supabase_status == "ok"
 
     return {
         "status": "ready" if is_ready else "not_ready",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "checks": {
-            "postgres": postgres_status,
+            "supabase": supabase_status,
         },
     }
 
