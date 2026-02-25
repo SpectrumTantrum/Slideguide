@@ -1,5 +1,7 @@
 # SlideGuide
 
+**English** | [中文](README.zh-CN.md)
+
 AI-powered tutoring from your lecture slides. Upload a PDF or PPTX, and SlideGuide creates a personalized study session with adaptive explanations, interactive quizzes, and progress tracking — designed for neurodivergent learners.
 
 ## Architecture
@@ -75,17 +77,50 @@ graph TB
 - **Circuit breaker**: Automatic fallback between LLM providers
 - **Local LLM support**: Run entirely offline with LM Studio — auto-discovers models, adapts tool calling
 
-## Setup
+## Quick Start
 
 ### Prerequisites
 
 - Python 3.11+
 - Node.js 18+
 - [Docker](https://docs.docker.com/get-docker/) (required by Supabase CLI)
-- [Supabase CLI](https://supabase.com/docs/guides/cli) (or a hosted Supabase project)
+- [Supabase CLI](https://supabase.com/docs/guides/cli)
 - OpenRouter API key (cloud mode) **or** [LM Studio](https://lmstudio.ai/) (local mode)
-- OpenAI API key (for embeddings in cloud mode)
-- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) (optional — only needed for OCR on image-heavy slides)
+
+### Setup & Run
+
+```bash
+git clone https://github.com/yourusername/slideguide.git
+cd slideguide
+pip install -e "."
+slideguide setup     # Interactive: checks prereqs, configures .env, starts Supabase, installs deps
+slideguide start     # Starts backend + frontend, opens browser
+```
+
+That's it. Visit `http://localhost:3000` to start using SlideGuide.
+
+### CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `slideguide setup` | Interactive first-time setup (prereqs, env, database, deps) |
+| `slideguide start` | Start all services (Supabase, backend, frontend) |
+| `slideguide stop` | Stop running services |
+| `slideguide restart` | Restart all services |
+| `slideguide dev` | Start in dev mode (debug logging, no browser) |
+| `slideguide status` | Show service status table |
+| `slideguide doctor` | Run comprehensive health checks |
+| `slideguide logs` | Stream combined service logs |
+| `slideguide test` | Run the test suite |
+| `slideguide db reset` | Reset the local database |
+| `slideguide db studio` | Open Supabase Studio in browser |
+| `slideguide config show` | Display current configuration (secrets redacted) |
+| `slideguide config edit` | Re-run the configuration wizard |
+| `slideguide config provider openrouter` | Quick-switch LLM provider |
+| `slideguide config validate` | Validate configuration and API keys |
+
+<details>
+<summary>Manual setup (without CLI)</summary>
 
 ### 1. Clone and configure
 
@@ -99,16 +134,11 @@ cp .env.example .env
 ### 2. Start Supabase
 
 ```bash
-# Start local Supabase (runs PostgreSQL with pgvector, Storage, and more)
 supabase start
-
-# Apply database migrations
 supabase db reset
 ```
 
-This starts PostgreSQL with pgvector (port 54322), Supabase API (port 54321), and Supabase Storage. The migrations create all required tables, enable pgvector, and configure the storage bucket.
-
-After `supabase start` finishes, it prints your local credentials. Copy the `anon key` and `service_role key` values into your `.env`:
+After `supabase start` finishes, copy the `anon key` and `service_role key` values into your `.env`:
 
 ```bash
 SUPABASE_URL=http://127.0.0.1:54321
@@ -119,10 +149,7 @@ SUPABASE_SERVICE_ROLE_KEY=<service_role key from supabase start output>
 ### 3. Backend setup
 
 ```bash
-# Install Python dependencies
 pip install -e ".[dev]"
-
-# Start the API server
 uvicorn backend.main:app --reload --port 8000
 ```
 
@@ -141,6 +168,8 @@ Visit `http://localhost:3000` to start using SlideGuide.
 ```bash
 pytest tests/ -v
 ```
+
+</details>
 
 ## Using Local LLMs (LM Studio)
 
@@ -283,6 +312,11 @@ slideguide/
 ├── supabase/
 │   ├── config.toml     # Local Supabase CLI config
 │   └── migrations/     # SQL migrations (schema, pgvector, storage)
+├── cli/               # CLI tool (Typer)
+│   ├── main.py        # Entry point and command registration
+│   ├── config.py      # Paths, ports, platform detection
+│   ├── commands/      # setup, services, status, db, config, test
+│   └── utils/         # prereqs, env_builder, supabase, processes, health
 ├── tests/              # Python tests
 └── pyproject.toml      # Python project config
 ```

@@ -51,3 +51,7 @@ docker-data/
 
 # Claude
 .claude/
+CLAUDE.md
+
+# SlideGuide CLI state
+.slideguide/
