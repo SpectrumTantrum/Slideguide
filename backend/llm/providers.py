@@ -1,9 +1,10 @@
 """
-Provider configuration resolution for LLM and embedding clients.
+Connection parameters for the OpenAI-compatible endpoint.
 
-Returns connection parameters (base_url, api_key, headers) based on
-the active provider setting. Both OpenRouter and LM Studio use the
-OpenAI-compatible API, so the SDK is the same — only config differs.
+SlideGuide talks to a single OpenAI-compatible API (chat, embeddings, and
+vision) whose base URL and key are chosen by the user. This can be real
+OpenAI, Ollama, vLLM, LocalAI, OpenRouter, LM Studio, or any gateway that
+speaks the OpenAI API.
 """
 
 from __future__ import annotations
@@ -13,10 +14,15 @@ from typing import Any
 
 from backend.config import settings
 
+# The OpenAI SDK refuses to initialize without a non-empty api_key. Many
+# OpenAI-compatible endpoints (local Ollama/vLLM/LocalAI, LM Studio, etc.) do
+# not require authentication, so we send a harmless placeholder in that case.
+_NO_AUTH_PLACEHOLDER = "sk-no-key-required"
+
 
 @dataclass(frozen=True)
 class ProviderConfig:
-    """Connection parameters for an OpenAI-compatible API provider."""
+    """Connection parameters for an OpenAI-compatible API endpoint."""
 
     name: str
     base_url: str
@@ -34,61 +40,11 @@ class ProviderConfig:
         return kwargs
 
 
-def get_chat_provider_config() -> ProviderConfig:
-    """Resolve the active chat/LLM provider configuration."""
-    if settings.llm_provider == "lmstudio":
-        return ProviderConfig(
-            name="lmstudio",
-            base_url=settings.lmstudio_base_url,
-            api_key="lm-studio",  # SDK requires non-empty; LM Studio ignores it
-            headers={},
-        )
+def get_provider_config() -> ProviderConfig:
+    """Resolve the OpenAI-compatible endpoint configuration."""
     return ProviderConfig(
-        name="openrouter",
-        base_url=settings.openrouter_base_url,
-        api_key=settings.openrouter_api_key,
-        headers={
-            "HTTP-Referer": settings.app_url,
-            "X-Title": settings.app_name,
-        },
-    )
-
-
-def get_embedding_provider_config() -> ProviderConfig:
-    """Resolve the active embedding provider configuration."""
-    if settings.embedding_provider == "lmstudio":
-        return ProviderConfig(
-            name="lmstudio",
-            base_url=settings.lmstudio_base_url,
-            api_key="lm-studio",
-            headers={},
-        )
-    return ProviderConfig(
-        name="openrouter",
-        base_url=settings.openrouter_base_url,
-        api_key=settings.openrouter_api_key,
-        headers={
-            "HTTP-Referer": settings.app_url,
-            "X-Title": settings.app_name,
-        },
-    )
-
-
-def get_vision_provider_config() -> ProviderConfig:
-    """Resolve the vision provider — defaults to OpenRouter for cloud VLMs."""
-    if settings.vision_provider == "lmstudio":
-        return ProviderConfig(
-            name="lmstudio",
-            base_url=settings.lmstudio_base_url,
-            api_key="lm-studio",
-            headers={},
-        )
-    return ProviderConfig(
-        name="openrouter",
-        base_url=settings.openrouter_base_url,
-        api_key=settings.openrouter_api_key,
-        headers={
-            "HTTP-Referer": settings.app_url,
-            "X-Title": settings.app_name,
-        },
+        name="openai",
+        base_url=settings.openai_base_url,
+        api_key=settings.openai_api_key or _NO_AUTH_PLACEHOLDER,
+        headers={},
     )

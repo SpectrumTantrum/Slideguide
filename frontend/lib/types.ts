@@ -69,9 +69,12 @@ export interface QuizScore {
 }
 
 export interface ProviderConfig {
-  llm_provider: "openrouter" | "lmstudio";
-  embedding_provider: "openai" | "lmstudio";
-  vision_provider: "openrouter" | "lmstudio";
+  provider: "openai";
+  base_url: string;
+  endpoint: {
+    status: "ok" | "unreachable";
+    models_loaded: number;
+  };
   capabilities: {
     vision: boolean;
     tool_mode: "native" | "prompt" | "none";
@@ -81,10 +84,6 @@ export interface ProviderConfig {
     routing: string;
     embedding: string;
     vision: string;
-  };
-  lmstudio?: {
-    status: "ok" | "unreachable";
-    models_loaded: number;
   };
 }
 

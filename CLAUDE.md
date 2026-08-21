@@ -58,14 +58,14 @@ supabase migration new <name>   # Create a new migration
 ### Backend Layers (`backend/`)
 
 - **`agent/`** — LangGraph tutoring agent. State machine with 6 phases: `greeting → topic_selection → teaching → quiz → review → wrap_up`. Nodes: `router`, `explain`, `quiz`, `summarize`, `encourage`, `clarify`, `tool_executor`. Conditional routing based on phase and tool calls.
-- **`rag/`** — Hybrid retrieval pipeline. Semantic search (OpenAI/LM Studio embeddings in pgvector) + keyword search (PostgreSQL full-text) fused via Reciprocal Rank Fusion, then diversified with MMR. Slide-aware chunking preserves metadata (slide number, content type).
-- **`llm/`** — Provider abstraction layer. Config-driven selection between OpenRouter (cloud) and LM Studio (local) per capability (chat, embeddings, vision). Includes circuit breaker fallback and tool compatibility adapter (native ↔ prompt-based tool use for models that lack native tool support).
+- **`rag/`** — Hybrid retrieval pipeline. Semantic search (OpenAI-compatible embeddings in pgvector) + keyword search (PostgreSQL full-text) fused via Reciprocal Rank Fusion, then diversified with MMR. Slide-aware chunking preserves metadata (slide number, content type).
+- **`llm/`** — Client layer for a single user-chosen OpenAI-compatible endpoint (chat, embeddings, vision). Includes retry/circuit breaker and a tool compatibility adapter (native ↔ prompt-based tool use for models that lack native tool support).
 - **`db/`** — Repository pattern over Supabase. Separate repository classes per entity (`uploads`, `sessions`, `messages`, `progress`, `slides`, `storage`). Client singleton via `get_supabase()`.
 - **`routes/`** — FastAPI routers for chat (SSE streaming) and settings/provider management.
 - **`parsers/`** — PDF (PyMuPDF) and PPTX (python-pptx) parsing with optional Tesseract OCR for images.
 - **`monitoring/`** — structlog with request ID middleware, health endpoints (`/health/live`, `/health/ready`), cost/error metrics.
 - **`models/`** — Pydantic schemas shared across layers.
-- **`config.py`** — Single `Settings` class (pydantic-settings) loading from `.env`. Properties resolve active model IDs based on selected provider.
+- **`config.py`** — Single `Settings` class (pydantic-settings) loading from `.env`. Holds the OpenAI-compatible endpoint (`OPENAI_BASE_URL`, `OPENAI_API_KEY`) and model names; `active_*` properties resolve them.
 - **`memory/`** — Session context window management (summarizes overflow) and student progress tracking (confidence, quiz scores, coverage). Sits on top of LangGraph checkpointer and Supabase tables.
 
 ### Frontend (`frontend/`)
@@ -82,14 +82,14 @@ Three migrations: initial schema, pgvector chunks, and storage bucket setup. Loc
 
 ## Key Patterns
 
-- **Provider config**: `LLM_PROVIDER`, `EMBEDDING_PROVIDER`, `VISION_PROVIDER` env vars independently select cloud vs local for each capability. Models are resolved via `Settings` properties (`active_primary_model`, etc.).
+- **Provider config**: one OpenAI-compatible endpoint (`OPENAI_BASE_URL` + optional `OPENAI_API_KEY`) serves chat, embeddings, and vision. Model names come from `PRIMARY_MODEL`/`ROUTING_MODEL`/`EMBEDDING_MODEL`/`VISION_MODEL`, resolved via `Settings` properties (`active_primary_model`, etc.). Empty API keys get a placeholder so keyless local endpoints work.
 - **SSE events**: Chat streaming emits `token`, `phase_change`, `error`, `done` event types.
 - **Agent state** (`TutorState`): Append-only messages, phase tracking, student profile (confidence, consecutive correct/incorrect), teaching preferences (explanation mode, pacing level).
 - **Shared instances**: `vectorstore`, `ingestion_pipeline`, `retriever` are module-level singletons in `main.py`, initialized at import time.
 - **Tool compatibility**: `ToolCompatibilityLayer` auto-switches between native (OpenAI format) and prompt-based tool calling after 3 consecutive parse failures. See `llm/tool_compatibility.py`.
-- **LM Studio discovery**: `llm/discovery.py` auto-discovers local models via `/v1/models`, caches 60s. Falls back gracefully if unreachable.
+- **Model discovery**: `llm/discovery.py` lists models and checks reachability via the endpoint's `/v1/models`. Falls back gracefully if unreachable.
 - **Checkpointing**: LangGraph uses `MemorySaver` (in-memory) by default; `AsyncPostgresSaver` available for persistent state. Thread ID = session ID.
-- **Cost tracking**: Per-model and per-provider token/cost aggregation in `monitoring/metrics.py`. Pricing table for Claude Sonnet/Haiku, DeepSeek, embeddings.
+- **Cost tracking**: Per-model token/cost aggregation in `monitoring/metrics.py`. Recognized model IDs are priced via `MODEL_PRICING`; unknown/local models are tracked at $0.00.
 
 ## Code Style
 

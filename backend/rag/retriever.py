@@ -37,13 +37,13 @@ class HybridRetriever:
 
     @property
     def embedding_client(self) -> Any:
-        """Lazy-init the embedding client using the active provider."""
+        """Lazy-init the embedding client for the OpenAI-compatible endpoint."""
         if self._embedding_client is None:
             import openai
 
-            from backend.llm.providers import get_embedding_provider_config
+            from backend.llm.providers import get_provider_config
 
-            config = get_embedding_provider_config()
+            config = get_provider_config()
             self._embedding_client = openai.AsyncOpenAI(**config.client_kwargs())
         return self._embedding_client
 

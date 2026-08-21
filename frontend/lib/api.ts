@@ -132,31 +132,46 @@ export function streamMessage(
       const decoder = new TextDecoder();
       let buffer = "";
 
+      // Parse one SSE event block (lines separated by \n, terminated by a
+      // blank line). sse-starlette emits standard SSE:
+      //   event: <name>\n data: <json>\n\n
+      const handleBlock = (block: string) => {
+        let name = "message";
+        const dataParts: string[] = [];
+        for (const line of block.split("\n")) {
+          if (line.startsWith("event:")) {
+            name = line.slice(6).trim();
+          } else if (line.startsWith("data:")) {
+            dataParts.push(line.slice(5).replace(/^ /, ""));
+          }
+        }
+        if (dataParts.length === 0) return;
+        try {
+          const data = JSON.parse(dataParts.join("\n"));
+          onEvent(name, data);
+        } catch {
+          // Skip malformed events
+        }
+      };
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
+        // Normalize CRLF (sse-starlette uses \r\n) so blank-line splitting works.
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
 
-        // Parse SSE events from buffer
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const payload = JSON.parse(line.slice(6));
-              onEvent(payload.event, payload.data || payload);
-            } catch {
-              // Skip malformed events
-            }
-          }
-          // Also handle sse-starlette format: event: X\ndata: Y
-          if (line.startsWith("event: ")) {
-            // Event name is on next data: line, handled above
-          }
+        // Split off complete event blocks (delimited by a blank line),
+        // keeping any trailing partial block in the buffer.
+        const blocks = buffer.split("\n\n");
+        buffer = blocks.pop() || "";
+        for (const block of blocks) {
+          if (block.trim()) handleBlock(block);
         }
       }
+
+      // Flush any remaining buffered event.
+      if (buffer.trim()) handleBlock(buffer);
 
       onDone();
     })

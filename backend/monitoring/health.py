@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import httpx
 from fastapi import APIRouter
 
 from backend.config import settings
@@ -33,26 +32,11 @@ def _check_supabase() -> str:
         return "unavailable"
 
 
-async def _check_openrouter() -> str:
-    """Check OpenRouter API reachability."""
-    if not settings.openrouter_api_key:
-        return "not_configured"
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                f"{settings.openrouter_base_url}/models",
-                headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
-            )
-            return "ok" if resp.status_code == 200 else "degraded"
-    except Exception:
-        return "unavailable"
+async def _check_endpoint() -> dict:
+    """Check the configured OpenAI-compatible endpoint's reachability."""
+    from backend.llm.discovery import check_endpoint_health
 
-
-async def _check_lmstudio() -> dict:
-    """Check LM Studio connectivity and loaded models."""
-    from backend.llm.discovery import check_lmstudio_health
-
-    return await check_lmstudio_health()
+    return await check_endpoint_health(settings.openai_base_url)
 
 
 @router.get("/health")
@@ -62,25 +46,18 @@ async def health_check() -> dict:
         "supabase": _check_supabase(),
     }
 
-    # Check the active LLM provider
-    if settings.llm_provider == "lmstudio":
-        lms_health = await _check_lmstudio()
-        checks["lmstudio"] = lms_health["status"]
-        checks["lmstudio_models"] = lms_health["models_loaded"]
-        # Still check OpenRouter if vision needs it
-        if settings.vision_provider == "openrouter" and settings.openrouter_api_key:
-            checks["openrouter_vision"] = await _check_openrouter()
-    else:
-        checks["openrouter"] = await _check_openrouter()
+    endpoint_health = await _check_endpoint()
+    checks["llm_endpoint"] = endpoint_health["status"]
+    checks["llm_endpoint_models"] = endpoint_health["models_loaded"]
 
     all_ok = all(
         v == "ok" for k, v in checks.items()
-        if isinstance(v, str) and k != "lmstudio_models"
+        if isinstance(v, str) and k != "llm_endpoint_models"
     )
-    # Supabase is always required; LM Studio is critical when it's the LLM provider
-    critical_ok = checks["supabase"] == "ok"
-    if settings.llm_provider == "lmstudio":
-        critical_ok = critical_ok and checks.get("lmstudio") == "ok"
+    # Supabase and the LLM endpoint are both required.
+    critical_ok = (
+        checks["supabase"] == "ok" and checks.get("llm_endpoint") == "ok"
+    )
 
     if all_ok:
         status = "healthy"
@@ -139,10 +116,10 @@ async def get_metrics() -> dict:
 
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "active_provider": {
-            "llm": settings.llm_provider,
-            "embedding": settings.embedding_provider,
-            "vision": settings.vision_provider,
+        "endpoint": {
+            "base_url": settings.openai_base_url,
+            "primary_model": settings.active_primary_model,
+            "embedding_model": settings.active_embedding_model,
         },
         **summary,
         "models": model_stats,

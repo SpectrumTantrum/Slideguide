@@ -46,7 +46,8 @@ class ProgressRepository:
             .maybe_single()
             .execute()
         )
-        return result.data
+        # supabase-py returns None (not a response) when no row matches.
+        return result.data if result is not None else None
 
     def update_by_session_id(self, session_id: str, **data: Any) -> dict:
         result = (

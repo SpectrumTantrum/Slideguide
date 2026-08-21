@@ -17,7 +17,7 @@ from typing import Any
 import openai
 
 from backend.config import settings
-from backend.llm.providers import get_vision_provider_config
+from backend.llm.providers import get_provider_config
 from backend.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
@@ -57,12 +57,10 @@ class VisionClient:
     """
 
     def __init__(self) -> None:
-        self._provider_config = get_vision_provider_config()
-        self._available = bool(self._provider_config.api_key and self._provider_config.api_key != "lm-studio")
-
-        # For lmstudio vision provider, we trust the user knows they have a vision model
-        if settings.vision_provider == "lmstudio":
-            self._available = True
+        self._provider_config = get_provider_config()
+        # Vision is enabled when a vision-capable model is configured for the
+        # endpoint. We trust the user-chosen endpoint serves that model.
+        self._available = bool(settings.active_vision_model)
 
         if self._available:
             self._client = openai.AsyncOpenAI(**self._provider_config.client_kwargs())
@@ -70,7 +68,8 @@ class VisionClient:
             self._client = None
             logger.warning(
                 "vision_unavailable",
-                reason="No API key for vision provider. Set OPENROUTER_API_KEY or VISION_PROVIDER=lmstudio.",
+                reason="No vision model configured. Set VISION_MODEL to a "
+                "vision-capable model served by your endpoint.",
             )
 
     async def describe_image(
@@ -139,7 +138,7 @@ class VisionClient:
         if not self._available or self._client is None:
             return (
                 "[Vision unavailable] Image analysis requires a vision-capable model. "
-                "Configure OPENROUTER_API_KEY or set VISION_PROVIDER=lmstudio with a vision model loaded."
+                "Set VISION_MODEL to a vision model served by your OpenAI-compatible endpoint."
             )
 
         messages: list[dict[str, Any]] = [

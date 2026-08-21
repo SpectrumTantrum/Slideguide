@@ -1,17 +1,16 @@
 """
 LLM client wrappers for chat and embeddings.
 
-Supports multiple providers (OpenRouter, LM Studio) via the same
-OpenAI-compatible SDK. Provider selection is driven by config.
+Talks to a single user-configured OpenAI-compatible endpoint via the OpenAI
+SDK.
 
 LLMClient handles:
-- Chat completions via configurable provider
+- Chat completions
 - Retry with exponential backoff (3 attempts)
 - Circuit breaker (opens after 5 consecutive failures)
 - Automatic cost tracking via MetricsCollector
-- Model fallback chain
 
-EmbeddingClient handles embeddings via configurable provider.
+EmbeddingClient handles embeddings via the same endpoint.
 """
 
 from __future__ import annotations
@@ -24,8 +23,8 @@ from typing import Any, AsyncGenerator
 import openai
 
 from backend.config import settings
-from backend.llm.models import get_fallback_chain, estimate_cost
-from backend.llm.providers import get_chat_provider_config, get_embedding_provider_config
+from backend.llm.models import get_fallback_chain
+from backend.llm.providers import get_provider_config
 from backend.monitoring.logger import get_logger
 from backend.monitoring.metrics import metrics
 
@@ -85,18 +84,17 @@ class LLMClient:
     """
     LLM client with retry, circuit breaker, and cost tracking.
 
-    Uses the OpenAI SDK pointed at the active provider's base URL
-    (OpenRouter or LM Studio).
+    Uses the OpenAI SDK pointed at the configured OpenAI-compatible endpoint.
     """
 
     def __init__(self) -> None:
-        self._provider_config = get_chat_provider_config()
+        self._provider_config = get_provider_config()
         self._client = openai.AsyncOpenAI(**self._provider_config.client_kwargs())
         self._circuit = CircuitBreaker()
 
     @property
     def provider(self) -> str:
-        """Name of the active provider (e.g., 'openrouter', 'lmstudio')."""
+        """Name of the endpoint (always the OpenAI-compatible provider)."""
         return self._provider_config.name
 
     async def chat(
@@ -264,10 +262,10 @@ class LLMClient:
 
 
 class EmbeddingClient:
-    """Embedding client using the active provider (OpenAI or LM Studio)."""
+    """Embedding client using the configured OpenAI-compatible endpoint."""
 
     def __init__(self) -> None:
-        self._provider_config = get_embedding_provider_config()
+        self._provider_config = get_provider_config()
         self._client = openai.AsyncOpenAI(**self._provider_config.client_kwargs())
 
     @property
