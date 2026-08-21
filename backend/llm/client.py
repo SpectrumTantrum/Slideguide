@@ -35,6 +35,10 @@ CIRCUIT_FAILURE_THRESHOLD = 5
 CIRCUIT_RESET_TIMEOUT = 30.0
 
 
+class AllModelsExhaustedError(RuntimeError):
+    """Raised when every model in the fallback chain failed."""
+
+
 class CircuitBreaker:
     """Simple circuit breaker for one chat SDK."""
 
@@ -351,10 +355,7 @@ class LLMClient:
             breaker.record_failure()
             logger.error("llm_model_exhausted", model=model_id, provider=provider)
 
-        raise openai.APIConnectionError(
-            message="All models in fallback chain exhausted",
-            request=None,  # type: ignore[arg-type]
-        )
+        raise AllModelsExhaustedError("All models in fallback chain exhausted")
 
     async def _once(
         self,

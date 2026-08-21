@@ -42,7 +42,7 @@ class Settings(BaseSettings):
 
     # Cursor SDK (https://cursor.com/docs/sdk/python). Chat billed to CURSOR_API_KEY.
     cursor_api_key: str = ""
-    cursor_runtime: Literal["local", "cloud"] = "local"
+    cursor_runtime: Literal["local", "cloud"] = "local"  # cloud refused for tutoring
     cursor_model: str = ""  # optional; defaults to grok-4.6
     cursor_reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "high"
     cursor_workspace: str = ""  # optional root; each session gets its own subdir

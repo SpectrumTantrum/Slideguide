@@ -123,14 +123,14 @@ class CreateSessionRequest(BaseModel):
     """Request to create a new tutoring session."""
 
     upload_id: str
-    provider: str | None = None
+    provider: Literal["openai", "cursor"] | None = None
 
 
 class SendMessageRequest(BaseModel):
     """Request to send a message in a session."""
 
     content: str
-    provider: str | None = None
+    provider: Literal["openai", "cursor"] | None = None
 
 
 # ── Quiz ──────────────────────────────────────────────────────────────────────

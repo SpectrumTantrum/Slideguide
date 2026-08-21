@@ -272,11 +272,11 @@ export const useStore = create<SlideGuideStore>((set, get) => ({
   },
 
   switchProvider: async (provider) => {
-    writeStoredProvider(provider);
     const sessionId = get().session?.session_id;
     const config = sessionId
       ? await api.switchProvider(provider, sessionId)
       : await api.getProviderConfig({ provider });
+    writeStoredProvider(config.provider);
     set({
       provider: config,
       session: get().session

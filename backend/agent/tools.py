@@ -99,9 +99,7 @@ async def generate_quiz_question(
     Creates a quiz question grounded in the slide content,
     with an answer key and explanation.
     """
-    from backend.llm.client import LLMClient
-
-    client = LLMClient()
+    from backend.agent.nodes import llm as client
 
     format_instructions = {
         "multiple_choice": "Provide 4 options labeled A, B, C, D. Include the correct answer letter.",
@@ -169,9 +167,7 @@ async def evaluate_student_answer(
 
     Provides partial credit, feedback, and detailed explanation.
     """
-    from backend.llm.client import LLMClient
-
-    client = LLMClient()
+    from backend.agent.nodes import llm as client
 
     prompt = f"""Evaluate this student's answer:
 

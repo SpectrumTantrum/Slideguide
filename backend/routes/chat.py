@@ -224,7 +224,7 @@ async def send_message(
             while not invoke_task.done():
                 if await request.is_disconnected():
                     invoke_task.cancel()
-                    cancel_active_runs()
+                    cancel_active_runs(session_id)
                     logger.info("sse_client_disconnected", session_id=session_id)
                     return
                 await asyncio.wait({invoke_task}, timeout=0.2)
@@ -297,7 +297,7 @@ async def send_message(
                 progress_tracker.update_topic_covered(session_id, topic)
 
         except asyncio.CancelledError:
-            cancel_active_runs()
+            cancel_active_runs(session_id)
             raise
         except Exception as e:
             logger.error(
@@ -309,7 +309,7 @@ async def send_message(
         finally:
             if invoke_task is not None and not invoke_task.done():
                 invoke_task.cancel()
-                cancel_active_runs()
+                cancel_active_runs(session_id)
             reset_chat_sdk(token)
 
     return EventSourceResponse(event_generator())

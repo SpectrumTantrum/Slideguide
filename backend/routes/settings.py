@@ -25,8 +25,10 @@ from backend.llm.runtime import (
     session_chat_sdk,
     tool_mode_for,
 )
+from backend.monitoring.logger import get_logger
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+logger = get_logger(__name__)
 
 _tool_compat = None
 
@@ -51,7 +53,8 @@ def _provider_payload(sdk: str, *, session_id: str | None = None) -> dict[str, A
     resolved = models_for(sdk)
     tool_mode = tool_mode_for(sdk)
     if sdk != "cursor" and _tool_compat is not None:
-        tool_mode = getattr(_tool_compat, "mode", tool_mode)
+        # Use the learned OpenAI-compat mode, not mode (which reads request ContextVar).
+        tool_mode = getattr(_tool_compat, "learned_mode", getattr(_tool_compat, "_mode", tool_mode))
     cloud = settings.cursor_runtime == "cloud"
     return {
         "provider": sdk,
@@ -65,7 +68,9 @@ def _provider_payload(sdk: str, *, session_id: str | None = None) -> dict[str, A
         "cursor": {
             "runtime": settings.cursor_runtime,
             "local_tools_disabled": sdk == "cursor" and not cloud,
+            # Cloud tutoring is refused in CursorTranslator; flag stays truthful.
             "cloud_loads_team_tools": sdk == "cursor" and cloud,
+            "tutoring_requires_local": True,
         },
         "capabilities": {
             "vision": bool(resolved.vision) or sdk == "cursor",
@@ -154,8 +159,13 @@ async def switch_provider(request: Request, body: ProviderSwitchRequest) -> dict
             {"configurable": {"thread_id": body.session_id}},
             {"chat_sdk": sdk},
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning(
+            "provider_switch_graph_state_failed",
+            session_id=body.session_id,
+            chat_sdk=sdk,
+            error=str(exc),
+        )
 
     from backend.agent.nodes import llm
 

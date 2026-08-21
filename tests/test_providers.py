@@ -273,15 +273,33 @@ class TestCursorTranslator:
         monkeypatch.setattr(settings, "cursor_workspace", str(tmp_path / "root"))
         options = CursorTranslator().agent_options("grok-4.6", session_id="sess-1")
         assert list(options.tools) == []
+        assert options.mcp_servers == {}
         assert str(options.local.cwd).endswith("sess-1")
 
-    def test_cloud_omits_tools(self, monkeypatch):
+    def test_cloud_runtime_is_refused_for_tutoring(self, monkeypatch):
         monkeypatch.setattr(settings, "cursor_api_key", "crsr_test")
         monkeypatch.setattr(settings, "cursor_runtime", "cloud")
-        options = CursorTranslator().agent_options("composer-2.5", session_id="sess-1")
-        assert options.tools is None
-        assert options.cloud is not None
-        assert list(options.cloud.repos or []) == []
+        from backend.llm.cursor import CursorCloudRuntimeError
+
+        with pytest.raises(CursorCloudRuntimeError, match="CURSOR_RUNTIME=cloud"):
+            CursorTranslator().agent_options("composer-2.5", session_id="sess-1")
+
+    def test_cancel_active_runs_from_other_thread(self):
+        class FakeRun:
+            def __init__(self) -> None:
+                self.cancelled = False
+
+            def cancel(self) -> None:
+                self.cancelled = True
+
+        from backend.llm import cursor as cursor_mod
+
+        run = FakeRun()
+        cursor_mod._track_run(run, "sess-cancel")
+        # Simulate SSE disconnect on a different logical caller.
+        cancel_active_runs("sess-cancel")
+        assert run.cancelled is True
+        assert "sess-cancel" not in cursor_mod._active_runs
 
     def test_cancel_active_runs(self):
         class FakeRun:
@@ -294,8 +312,8 @@ class TestCursorTranslator:
         from backend.llm import cursor as cursor_mod
 
         run = FakeRun()
-        cursor_mod._track_run(run)
-        cancel_active_runs()
+        cursor_mod._track_run(run, "sess-1")
+        cancel_active_runs("sess-1")
         assert run.cancelled is True
 
     @pytest.mark.asyncio
@@ -408,6 +426,29 @@ class TestCursorTranslator:
         assert openai.can_execute() is True
         client.reset_breaker("cursor")
         assert cursor.can_execute() is True
+
+
+class TestVisionMime:
+    def test_encode_image_detects_jpeg(self, tmp_path):
+        from backend.llm.vision import VisionClient
+
+        jpeg = tmp_path / "slide.jpeg"
+        jpeg.write_bytes(b"\xff\xd8\xff\xd9")
+        encoded = VisionClient._encode_image(str(jpeg))
+        assert encoded is not None
+        data, mime = encoded
+        assert data
+        assert mime == "image/jpeg"
+
+    def test_encode_image_detects_webp(self, tmp_path):
+        from backend.llm.vision import VisionClient
+
+        webp = tmp_path / "slide.webp"
+        webp.write_bytes(b"RIFF\x00\x00\x00\x00WEBP")
+        encoded = VisionClient._encode_image(str(webp))
+        assert encoded is not None
+        _, mime = encoded
+        assert mime == "image/webp"
 
 
 class TestSettingsRoutes:

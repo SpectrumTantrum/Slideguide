@@ -9,6 +9,7 @@ VISION_MODEL is used. Falls back gracefully when vision is unavailable.
 from __future__ import annotations
 
 import base64
+import mimetypes
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,8 @@ from backend.llm.runtime import current_chat_sdk, models_for
 from backend.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
+
+_DEFAULT_IMAGE_MIME = "image/png"
 
 DESCRIBE_IMAGE_PROMPT = (
     "Describe this lecture slide image in detail for a student studying the material. "
@@ -78,15 +81,16 @@ class VisionClient:
         Returns:
             A text description of the image content.
         """
-        image_data = self._encode_image(image_path)
-        if not image_data:
+        encoded = self._encode_image(image_path)
+        if not encoded:
             return ""
+        image_data, mime_type = encoded
 
         prompt = DESCRIBE_IMAGE_PROMPT
         if context:
             prompt += f"\n\nContext from the slide: {context}"
 
-        return await self._call_vision(image_data, prompt)
+        return await self._call_vision(image_data, prompt, mime_type=mime_type)
 
     async def describe_chart(
         self,
@@ -94,15 +98,16 @@ class VisionClient:
         context: str = "",
     ) -> str:
         """Describe a chart or graph image in detail."""
-        image_data = self._encode_image(image_path)
-        if not image_data:
+        encoded = self._encode_image(image_path)
+        if not encoded:
             return ""
+        image_data, mime_type = encoded
 
         prompt = DESCRIBE_CHART_PROMPT
         if context:
             prompt += f"\n\nSlide context: {context}"
 
-        return await self._call_vision(image_data, prompt)
+        return await self._call_vision(image_data, prompt, mime_type=mime_type)
 
     async def extract_diagram_relationships(
         self,
@@ -110,28 +115,32 @@ class VisionClient:
         context: str = "",
     ) -> str:
         """Extract components and relationships from a diagram."""
-        image_data = self._encode_image(image_path)
-        if not image_data:
+        encoded = self._encode_image(image_path)
+        if not encoded:
             return ""
+        image_data, mime_type = encoded
 
         prompt = EXTRACT_DIAGRAM_PROMPT
         if context:
             prompt += f"\n\nSlide context: {context}"
 
-        return await self._call_vision(image_data, prompt)
+        return await self._call_vision(image_data, prompt, mime_type=mime_type)
 
     async def _call_vision(
         self,
         image_base64: str,
         prompt: str,
+        mime_type: str = _DEFAULT_IMAGE_MIME,
     ) -> str:
         """Send an image to the active vision-capable provider."""
         provider = current_chat_sdk()
         if provider == "cursor":
-            return await self._call_cursor_vision(image_base64, prompt)
-        return await self._call_openai_vision(image_base64, prompt)
+            return await self._call_cursor_vision(image_base64, prompt, mime_type)
+        return await self._call_openai_vision(image_base64, prompt, mime_type)
 
-    async def _call_cursor_vision(self, image_base64: str, prompt: str) -> str:
+    async def _call_cursor_vision(
+        self, image_base64: str, prompt: str, mime_type: str = _DEFAULT_IMAGE_MIME
+    ) -> str:
         vision_model = models_for("cursor").vision
         messages: list[dict[str, Any]] = [
             {
@@ -140,7 +149,9 @@ class VisionClient:
                     {"type": "text", "text": prompt},
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/png;base64,{image_base64}"},
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{image_base64}",
+                        },
                     },
                 ],
             }
@@ -158,7 +169,9 @@ class VisionClient:
             logger.error("vlm_call_failed", error=str(e), provider="cursor")
             return ""
 
-    async def _call_openai_vision(self, image_base64: str, prompt: str) -> str:
+    async def _call_openai_vision(
+        self, image_base64: str, prompt: str, mime_type: str = _DEFAULT_IMAGE_MIME
+    ) -> str:
         if not settings.vision_model:
             return (
                 "[Vision unavailable] Image analysis requires a vision-capable model. "
@@ -173,7 +186,7 @@ class VisionClient:
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:image/png;base64,{image_base64}",
+                            "url": f"data:{mime_type};base64,{image_base64}",
                         },
                     },
                 ],
@@ -204,16 +217,20 @@ class VisionClient:
             return ""
 
     @staticmethod
-    def _encode_image(image_path: str) -> str:
-        """Read and base64-encode an image file."""
+    def _encode_image(image_path: str) -> tuple[str, str] | None:
+        """Read and base64-encode an image file; return ``(data, mime_type)``."""
         path = Path(image_path)
         if not path.exists():
             logger.warning("image_not_found", path=image_path)
-            return ""
+            return None
 
         try:
             image_bytes = path.read_bytes()
-            return base64.b64encode(image_bytes).decode("utf-8")
+            mime_type, _ = mimetypes.guess_type(str(path))
+            return (
+                base64.b64encode(image_bytes).decode("utf-8"),
+                mime_type or _DEFAULT_IMAGE_MIME,
+            )
         except Exception as e:
             logger.error("image_encode_failed", path=image_path, error=str(e))
-            return ""
+            return None

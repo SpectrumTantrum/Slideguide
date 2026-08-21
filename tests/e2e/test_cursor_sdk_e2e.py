@@ -94,6 +94,7 @@ def test_agent_options_use_official_sdk_types(cursor_configured):
     assert isinstance(options.local, LocalAgentOptions)
     assert options.api_key == "crsr_e2e_test"
     assert list(options.tools) == []
+    assert options.mcp_servers == {}
     assert options.cloud is None
 
     model_id, params = model_id_and_params(options.model)
@@ -103,18 +104,12 @@ def test_agent_options_use_official_sdk_types(cursor_configured):
     assert list(options.local.setting_sources or []) == []
 
 
-def test_cloud_runtime_uses_no_repo_options(cursor_configured, monkeypatch):
-    from cursor_sdk import CloudAgentOptions
+def test_cloud_runtime_refused_for_tutoring(cursor_configured, monkeypatch):
+    from backend.llm.cursor import CursorCloudRuntimeError, CursorTranslator
 
     monkeypatch.setattr(settings, "cursor_runtime", "cloud")
-    options = CursorTranslator().agent_options("composer-2.5", session_id="sess-e2e")
-
-    assert isinstance(options.cloud, CloudAgentOptions)
-    assert list(options.cloud.repos or []) == []
-    assert options.cloud.auto_create_pr is False
-    assert options.local is None
-    assert options.tools is None
-    assert options.model == "composer-2.5"
+    with pytest.raises(CursorCloudRuntimeError, match="CURSOR_RUNTIME=cloud"):
+        CursorTranslator().agent_options("composer-2.5", session_id="sess-e2e")
 
 
 @pytest.mark.asyncio
@@ -166,6 +161,42 @@ async def test_llm_client_stream_yields_tokens(cursor_configured, monkeypatch):
     assert finish == "stop"
     assert RecordingAgent.last is not None
     assert RecordingAgent.last.options.model == "composer-2.5"
+
+
+@pytest.mark.asyncio
+async def test_vision_sends_jpeg_mime(cursor_configured, monkeypatch, tmp_path):
+    from cursor_sdk import SDKImage, UserMessage
+
+    RecordingAgent.last = None
+    monkeypatch.setattr(cursor_sdk, "Agent", RecordingAgent)
+    token = bind_chat_sdk("cursor", "sess-e2e")
+    try:
+        jpeg = tmp_path / "slide.jpg"
+        # Minimal JPEG (1x1)
+        jpeg.write_bytes(
+            bytes.fromhex(
+                "ffd8ffe000104a46494600010100000100010000ffdb004300080606070605080707"
+                "070909080a0c140d0c0b0b0c1912130f141d1a1f1e1d1a1c1c20242e2720222c231c"
+                "1c2837292c30313434341f27393d38323c2e333432ffdb0043010909090c0b0c180d"
+                "0d1832211c2132323232323232323232323232323232323232323232323232323232"
+                "323232323232323232323232323232323232323232ffc00011080001000103011100"
+                "0211031101ffc40014000100000000000000000000000000000000ffc40014100100"
+                "00000000000000000000000000000000ffda000c03010002110311003f00bf80ffd9"
+            )
+        )
+
+        description = await VisionClient().describe_image(str(jpeg), context="cell membrane")
+    finally:
+        reset_chat_sdk(token)
+
+    assert "Osmosis" in description
+    assert RecordingAgent.last is not None
+    assert isinstance(RecordingAgent.last.message, UserMessage)
+    images = list(RecordingAgent.last.message.images or [])
+    assert len(images) == 1
+    assert isinstance(images[0], SDKImage)
+    assert images[0].mime_type == "image/jpeg"
+    assert images[0].data
 
 
 @pytest.mark.asyncio

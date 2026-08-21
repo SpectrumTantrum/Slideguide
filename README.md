@@ -137,8 +137,10 @@ Visit `http://localhost:3000` to start using SlideGuide.
 ```bash
 pytest tests/ -v
 
-# Cursor SDK e2e (live tests skip unless CURSOR_API_KEY is set)
+# Cursor SDK e2e (live tests also need SLIDEGUIDE_LIVE_CURSOR=1)
 pytest tests/e2e -v
+# Live only:
+# SLIDEGUIDE_LIVE_CURSOR=1 pytest tests/e2e -m live -v
 ```
 
 ## Choosing your LLM (provider SDK)
@@ -170,16 +172,16 @@ process-wide cell.
 ```bash
 LLM_PROVIDER=cursor
 CURSOR_API_KEY=crsr_...
-CURSOR_RUNTIME=local          # local (default) or cloud
+CURSOR_RUNTIME=local          # tutoring requires local (cloud refused)
 CURSOR_MODEL=                 # optional; defaults to grok-4.6
 CURSOR_REASONING_EFFORT=high  # low | medium | high | xhigh
 CURSOR_WORKSPACE=             # optional root; each session gets its own subdir
 ```
 
-Local agents run text-only (`tools=[]`) in a **per-session** workspace under
-`CURSOR_WORKSPACE` or `/tmp/slideguide-cursor/<session_id>`. Cloud runtime
-omits `tools=[]` — team MCP servers and hooks still load. SSE disconnect
-cancels the in-flight Cursor run.
+Local agents run text-only (`tools=[]`, empty `mcp_servers`) in a **per-session**
+workspace under `CURSOR_WORKSPACE` or `/tmp/slideguide-cursor/<session_id>`.
+`CURSOR_RUNTIME=cloud` is refused for tutoring — team MCP/hooks cannot be
+blocked there. SSE disconnect cancels the in-flight Cursor run.
 
 ### OpenAI-compatible endpoint
 

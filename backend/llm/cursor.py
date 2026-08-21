@@ -4,8 +4,8 @@ Cursor SDK translator.
 Turns SlideGuide chat messages into a text-only ``cursor-sdk`` agent run
 and returns plain text. LLMClient owns HTTP/OpenAI shaping.
 
-Local agents pass ``tools=[]`` (no built-in tools). Cloud agents cannot
-restrict tools that way — team MCP servers and hooks still load.
+Tutoring always uses a local agent with ``tools=[]`` and ``mcp_servers={}``.
+``CURSOR_RUNTIME=cloud`` is refused — team MCP/hooks cannot be blocked there.
 """
 
 from __future__ import annotations
@@ -31,11 +31,17 @@ from backend.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
 
-_active_runs: threading.local = threading.local()
+# Process-wide registry so the SSE event-loop thread can cancel worker runs.
+_active_runs_lock = threading.Lock()
+_active_runs: dict[str, list[Any]] = {}
 
 
 class CursorNotConfiguredError(RuntimeError):
     """Raised when the Cursor SDK is selected but no API key is set."""
+
+
+class CursorCloudRuntimeError(RuntimeError):
+    """Raised when tutoring would run under cloud agents that load team tools."""
 
 
 @dataclass(frozen=True)
@@ -115,26 +121,35 @@ def workspace_dir(session_id: str | None = None) -> str:
     return str(path)
 
 
-def cancel_active_runs() -> None:
-    """Cancel Cursor runs started on this worker thread (SSE disconnect)."""
-    runs = getattr(_active_runs, "items", None)
-    if not runs:
-        return
-    for run in list(runs):
+def cancel_active_runs(session_id: str | None = None) -> None:
+    """Cancel tracked Cursor runs (SSE disconnect from the event-loop thread)."""
+    sid = session_id or current_session_id()
+    with _active_runs_lock:
+        if sid:
+            runs = list(_active_runs.pop(sid, []))
+        else:
+            runs = []
+            for key in list(_active_runs):
+                runs.extend(_active_runs.pop(key))
+    for run in runs:
         cancel = getattr(run, "cancel", None)
         if cancel:
             try:
                 cancel()
             except Exception as exc:
                 logger.warning("cursor_run_cancel_failed", error=str(exc))
-    runs.clear()
 
 
 class CursorTranslator:
     """One Cursor agent run per tutoring call."""
 
-    def chat(self, messages: list[dict[str, Any]], model: str) -> CursorReply:
-        result = self._run_once(messages, model)
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        session_id: str | None = None,
+    ) -> CursorReply:
+        result = self._run_once(messages, model, session_id=session_id)
         usage = getattr(result, "usage", None)
         return CursorReply(
             text=getattr(result, "result", None) or "",
@@ -144,21 +159,31 @@ class CursorTranslator:
             completion_tokens=getattr(usage, "output_tokens", 0) or 0,
         )
 
-    def iter_text(self, messages: list[dict[str, Any]], model: str) -> Iterator[str]:
-        yield from self._iter_text(messages, model)
+    def iter_text(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        session_id: str | None = None,
+    ) -> Iterator[str]:
+        yield from self._iter_text(messages, model, session_id=session_id)
 
-    async def chat_async(self, messages: list[dict[str, Any]], model: str) -> CursorReply:
-        return await asyncio.to_thread(self.chat, messages, model)
+    async def chat_async(
+        self, messages: list[dict[str, Any]], model: str
+    ) -> CursorReply:
+        session_id = current_session_id()
+        return await asyncio.to_thread(self.chat, messages, model, session_id)
 
     async def stream_text(
         self, messages: list[dict[str, Any]], model: str
     ) -> AsyncGenerator[str, None]:
+        # Capture before the worker thread; ContextVar does not cross threads.
+        session_id = current_session_id()
         queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
         loop = asyncio.get_running_loop()
 
         def worker() -> None:
             try:
-                for chunk in self.iter_text(messages, model):
+                for chunk in self.iter_text(messages, model, session_id=session_id):
                     loop.call_soon_threadsafe(queue.put_nowait, ("token", chunk))
                 loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
             except Exception as exc:
@@ -213,57 +238,72 @@ class CursorTranslator:
             return {"status": "unreachable", "models_loaded": 0}
 
     def agent_options(self, model: str, session_id: str | None = None) -> Any:
-        from cursor_sdk import AgentOptions, CloudAgentOptions, LocalAgentOptions
+        from cursor_sdk import AgentOptions, LocalAgentOptions
 
         api_key = settings.cursor_api_key.strip()
         if not api_key:
             raise CursorNotConfiguredError(
                 "CURSOR_API_KEY is required to bill tutoring calls to Cursor usage."
             )
-
-        kwargs: dict[str, Any] = {
-            "model": _sdk_model(model),
-            "api_key": api_key,
-        }
         if settings.cursor_runtime == "cloud":
-            # tools=[] is local-only. Cloud still loads team MCP / hooks.
-            kwargs["cloud"] = CloudAgentOptions(repos=[], auto_create_pr=False)
-        else:
-            kwargs["tools"] = []
-            kwargs["local"] = LocalAgentOptions(
+            # Cloud agents still load team MCP servers and hooks; tools=[] does
+            # not remove them. Tutoring must stay on an isolated local agent.
+            raise CursorCloudRuntimeError(
+                "CURSOR_RUNTIME=cloud is not supported for tutoring: team MCP "
+                "servers and hooks still load. Set CURSOR_RUNTIME=local."
+            )
+
+        return AgentOptions(
+            model=_sdk_model(model),
+            api_key=api_key,
+            tools=[],
+            mcp_servers={},
+            local=LocalAgentOptions(
                 cwd=workspace_dir(session_id),
                 setting_sources=[],
-            )
-        return AgentOptions(**kwargs)
+            ),
+        )
 
-    def _run_once(self, messages: list[dict[str, Any]], model: str) -> Any:
+    def _run_once(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        session_id: str | None = None,
+    ) -> Any:
         from cursor_sdk import Agent
 
-        options = self.agent_options(model)
+        sid = session_id or current_session_id()
+        options = self.agent_options(model, session_id=sid)
         prompt, images = format_messages_as_prompt(messages), extract_image_payloads(messages)
         with Agent.create(options) as agent:
             run = agent.send(_user_message(prompt, images))
-            _track_run(run)
+            _track_run(run, sid)
             try:
                 result = run.wait()
             finally:
-                _untrack_run(run)
+                _untrack_run(run, sid)
         _raise_if_failed(result)
         return result
 
-    def _iter_text(self, messages: list[dict[str, Any]], model: str) -> Any:
+    def _iter_text(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        session_id: str | None = None,
+    ) -> Any:
         from cursor_sdk import Agent
 
-        options = self.agent_options(model)
+        sid = session_id or current_session_id()
+        options = self.agent_options(model, session_id=sid)
         prompt, images = format_messages_as_prompt(messages), extract_image_payloads(messages)
         with Agent.create(options) as agent:
             run = agent.send(_user_message(prompt, images))
-            _track_run(run)
+            _track_run(run, sid)
             try:
                 yield from run.iter_text()
                 result = run.wait()
             finally:
-                _untrack_run(run)
+                _untrack_run(run, sid)
         _raise_if_failed(result)
 
 
@@ -297,22 +337,24 @@ def _raise_if_failed(result: Any) -> None:
         )
 
 
-def _track_run(run: Any) -> None:
-    items = getattr(_active_runs, "items", None)
-    if items is None:
-        items = []
-        _active_runs.items = items
-    items.append(run)
+def _track_run(run: Any, session_id: str | None = None) -> None:
+    sid = session_id or current_session_id() or "unbound"
+    with _active_runs_lock:
+        _active_runs.setdefault(sid, []).append(run)
 
 
-def _untrack_run(run: Any) -> None:
-    items = getattr(_active_runs, "items", None)
-    if not items:
-        return
-    try:
-        items.remove(run)
-    except ValueError:
-        pass
+def _untrack_run(run: Any, session_id: str | None = None) -> None:
+    sid = session_id or current_session_id() or "unbound"
+    with _active_runs_lock:
+        items = _active_runs.get(sid)
+        if not items:
+            return
+        try:
+            items.remove(run)
+        except ValueError:
+            pass
+        if not items:
+            _active_runs.pop(sid, None)
 
 
 def _parse_data_url(url: str) -> tuple[str, str] | None:

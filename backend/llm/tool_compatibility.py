@@ -104,6 +104,11 @@ class ToolCompatibilityLayer:
         self._mode: str = "native"  # "native" or "prompt"
 
     @property
+    def learned_mode(self) -> str:
+        """SDK-independent mode learned from native parse failures."""
+        return self._mode
+
+    @property
     def mode(self) -> str:
         from backend.llm.runtime import current_chat_sdk, tool_mode_for
 

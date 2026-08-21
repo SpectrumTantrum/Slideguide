@@ -1,8 +1,12 @@
-"""Live Cursor SDK e2e. Skipped unless ``CURSOR_API_KEY`` is set."""
+"""Live Cursor SDK e2e.
+
+Skipped unless ``CURSOR_API_KEY`` is set **and** ``SLIDEGUIDE_LIVE_CURSOR=1``.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 
@@ -13,13 +17,20 @@ from backend.llm.runtime import bind_chat_sdk, reset_chat_sdk
 
 from .conftest import cursor_api_key
 
-LIVE_REASON = "CURSOR_API_KEY is not set; live Cursor SDK calls are skipped"
+LIVE_REASON = (
+    "set CURSOR_API_KEY and SLIDEGUIDE_LIVE_CURSOR=1 to run live Cursor SDK calls"
+)
 LIVE_TIMEOUT_S = 180
+
+
+def _live_cursor_enabled() -> bool:
+    return bool(cursor_api_key()) and os.environ.get("SLIDEGUIDE_LIVE_CURSOR", "").strip() == "1"
+
 
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.live,
-    pytest.mark.skipif(not cursor_api_key(), reason=LIVE_REASON),
+    pytest.mark.skipif(not _live_cursor_enabled(), reason=LIVE_REASON),
 ]
 
 
