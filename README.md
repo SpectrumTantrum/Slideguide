@@ -22,17 +22,13 @@ graph TB
         Memory[Memory System]
     end
 
-    subgraph External["External Services"]
-        OpenRouter[OpenRouter API]
+    subgraph LLM["OpenAI-compatible endpoint (your choice)"]
+        Endpoint[Chat + Embeddings API]
     end
 
     subgraph Supabase["Supabase"]
         Postgres[(PostgreSQL + pgvector)]
         Storage[Supabase Storage]
-    end
-
-    subgraph Local["Local (optional)"]
-        LMStudio[LM Studio]
     end
 
     Upload -->|PDF/PPTX| Router
@@ -42,9 +38,8 @@ graph TB
     Agent -->|Semantic + full-text| RAG
     Agent -->|State Persistence| Memory
     RAG -->|Vector search| Postgres
-    RAG -->|Embeddings| OpenRouter
-    Agent -->|Chat| OpenRouter
-    Agent -.->|Local alternative| LMStudio
+    RAG -->|Embeddings| Endpoint
+    Agent -->|Chat| Endpoint
     Memory --> Postgres
     Parsers -->|File storage| Storage
 ```
@@ -56,8 +51,8 @@ graph TB
 | Frontend | Next.js 14, TypeScript, Tailwind CSS, Zustand | UI and state management |
 | Backend | FastAPI, Python 3.11+ | API server |
 | Agent | LangGraph | Multi-node stateful tutoring agent |
-| LLM | OpenRouter (Claude Sonnet/Haiku, DeepSeek fallback) or LM Studio (local) | Reasoning and generation |
-| Embeddings | OpenRouter (OpenAI text-embedding-3-small) or local embedding model | Semantic search vectors |
+| LLM | Any OpenAI-compatible endpoint (OpenAI, Ollama, vLLM, LocalAI, OpenRouter, LM Studio, …) | Reasoning and generation |
+| Embeddings | Any OpenAI-compatible embeddings endpoint (1536-d) | Semantic search vectors |
 | Database | Supabase (PostgreSQL + pgvector) | Vector search, sessions, progress, cost tracking |
 | Storage | Supabase Storage | Uploaded file persistence |
 | RAG | Hybrid search (semantic + full-text) → RRF → MMR | Retrieval pipeline |
@@ -71,8 +66,8 @@ graph TB
 - **VLM image understanding**: Describes charts, diagrams, and images from slides
 - **Progress tracking**: Topics covered, quiz scores, confidence levels
 - **SSE streaming**: Real-time token-by-token response streaming
-- **Circuit breaker**: Automatic fallback between LLM providers
-- **Local LLM support**: Run entirely offline with LM Studio — auto-discovers models, adapts tool calling
+- **Circuit breaker**: Retries with backoff and opens on repeated endpoint failures
+- **Bring-your-own endpoint**: Point at any OpenAI-compatible API — cloud or fully offline/keyless (Ollama, vLLM, LocalAI, …)
 
 ## Setup
 
@@ -82,7 +77,7 @@ graph TB
 - Node.js 18+
 - [Docker](https://docs.docker.com/get-docker/) (required by Supabase CLI)
 - [Supabase CLI](https://supabase.com/docs/guides/cli) (or a hosted Supabase project)
-- OpenRouter API key (cloud mode) **or** [LM Studio](https://lmstudio.ai/) (local mode) — a single OpenRouter key covers both chat and embeddings
+- An OpenAI-compatible endpoint for chat + embeddings (see [Choosing your LLM endpoint](#choosing-your-llm-endpoint-openai-compatible)) — this can be a hosted API or a fully local, keyless server
 - [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) (optional — only needed for OCR on image-heavy slides)
 
 ### 1. Clone and configure
@@ -140,91 +135,41 @@ Visit `http://localhost:3000` to start using SlideGuide.
 pytest tests/ -v
 ```
 
-## Using Local LLMs (LM Studio)
+## Choosing your LLM endpoint (OpenAI-compatible)
 
-SlideGuide can run entirely offline using local models via [LM Studio](https://lmstudio.ai/), with no API keys required for chat. This uses the same OpenAI-compatible API that the cloud path uses, so the switch is purely configuration.
+SlideGuide talks to a single OpenAI-compatible `/v1` API that **you choose** for
+chat, embeddings, and (optionally) vision. It can be a hosted service or a fully
+local, keyless server:
 
-### Quick start
+- **OpenAI** — `https://api.openai.com/v1`
+- **OpenRouter** — `https://openrouter.ai/api/v1`
+- **Ollama** (local, keyless) — `http://localhost:11434/v1`
+- **vLLM / LocalAI / LM Studio / Together / Groq / any gateway** that speaks the OpenAI API
 
-1. **Install and launch [LM Studio](https://lmstudio.ai/)**
-2. **Download a model** — any GGUF model works. Recommended:
-   - Chat: `mistral-nemo-instruct`, `llama-3.1-8b-instruct`, or `qwen2.5-7b-instruct`
-   - Embeddings: `nomic-embed-text-v1.5` or `bge-small-en-v1.5`
-3. **Load the model** and start LM Studio's local server (default: `http://localhost:1234`)
-4. **Set your `.env`**:
-
-```bash
-# Switch providers to local
-LLM_PROVIDER=lmstudio
-EMBEDDING_PROVIDER=lmstudio    # optional — keeps OpenRouter embeddings if omitted
-VISION_PROVIDER=lmstudio       # optional — only if your model supports vision
-
-# LM Studio connection
-LMSTUDIO_BASE_URL=http://localhost:1234/v1
-
-# Model names — leave empty to auto-discover from LM Studio
-LMSTUDIO_PRIMARY_MODEL=
-LMSTUDIO_ROUTING_MODEL=
-LMSTUDIO_EMBEDDING_MODEL=
-```
-
-5. **Start SlideGuide normally** — the backend auto-discovers loaded models from LM Studio.
-
-### Provider configuration
-
-Each capability (chat, embeddings, vision) can be pointed at a different provider independently:
-
-| Variable | Options | Default |
-|----------|---------|---------|
-| `LLM_PROVIDER` | `openrouter`, `lmstudio`, `openai` | `openrouter` |
-| `EMBEDDING_PROVIDER` | `openrouter`, `lmstudio`, `openai` | `openrouter` |
-| `VISION_PROVIDER` | `openrouter`, `lmstudio`, `openai` | `openrouter` |
-
-**Hybrid example** — local chat with cloud embeddings (best quality retrieval, free generation):
+Configure it in `.env`:
 
 ```bash
-LLM_PROVIDER=lmstudio
-EMBEDDING_PROVIDER=openrouter
-OPENROUTER_API_KEY=sk-or-...
-```
-
-## Using any OpenAI-compatible endpoint (`openai` provider)
-
-If you don't want an OpenRouter key, set any provider to `openai` and point it at
-an OpenAI-compatible `/v1` endpoint you choose — real OpenAI, Ollama, vLLM,
-LocalAI, Together, Groq, or a self-hosted gateway. **You decide the base URL, the
-API key, and the model names.** The key may be left empty for endpoints that
-don't require auth (a placeholder is sent so the OpenAI SDK still initializes),
-so the backend boots and runs with no OpenRouter key at all.
-
-```bash
-LLM_PROVIDER=openai
-EMBEDDING_PROVIDER=openai
-OPENAI_BASE_URL=https://api.openai.com/v1   # or http://localhost:11434/v1, etc.
-OPENAI_API_KEY=                             # empty for keyless local endpoints
-OPENAI_PRIMARY_MODEL=gpt-4o-mini            # any model your endpoint serves
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+OPENAI_BASE_URL=http://localhost:11434/v1   # your endpoint
+OPENAI_API_KEY=                             # optional — empty for keyless endpoints
+PRIMARY_MODEL=llama3.1:8b                    # any chat model your endpoint serves
+ROUTING_MODEL=                               # optional; falls back to PRIMARY_MODEL
+EMBEDDING_MODEL=text-embedding-3-small       # must return 1536-d vectors
+VISION_MODEL=                                # optional; leave empty to disable vision
 ```
 
 > **Embedding dimension:** the pgvector schema stores 1536-dimensional vectors, so
-> the endpoint used for `EMBEDDING_PROVIDER` must return 1536-d embeddings
-> (e.g. OpenAI `text-embedding-3-small`, or a model configured for 1536 dims).
-> The chat/vision endpoints have no such constraint.
-
-`GET /api/settings/provider` reports the active endpoint and its reachability, and
-`GET /api/settings/models` lists the models discovered from `OPENAI_BASE_URL`.
+> `EMBEDDING_MODEL` must return 1536-d embeddings (e.g. OpenAI
+> `text-embedding-3-small`, or a model configured for 1536 dims). Chat and vision
+> models have no such constraint.
 
 ### How it works
 
-- **Auto-discovery**: On startup, the backend queries `GET /v1/models` on LM Studio to find loaded models. If `LMSTUDIO_PRIMARY_MODEL` is empty, it picks the first available model.
-- **Tool compatibility**: Local models have inconsistent function-calling support. SlideGuide starts with native OpenAI-format tool calling, and if the model fails to produce valid tool calls 3 times in a row, it auto-switches to a prompt-based fallback that injects tool schemas into the system prompt and parses JSON blocks from the response.
-- **Zero cost tracking**: All local model calls are tracked at $0.00 — no cost limits apply.
-- **Health checks**: `GET /api/settings/provider` reports LM Studio connectivity and loaded model count.
-- **No fallback chain**: Unlike cloud mode (which falls back from Claude to DeepSeek), local mode uses a single model with no fallback.
+- **No key required**: if `OPENAI_API_KEY` is empty, a harmless placeholder is sent so the OpenAI SDK still initializes — keyless local endpoints work out of the box.
+- **Tool compatibility**: starts with native OpenAI-format tool calling; if the model fails to produce valid tool calls 3 times in a row, it switches to a prompt-based fallback that injects tool schemas into the system prompt.
+- **Cost tracking**: recognized model IDs are priced; unknown/local models are tracked at $0.00.
+- **Health + models**: `GET /api/settings/provider` reports the endpoint and its reachability; `GET /api/settings/models` lists models discovered from `OPENAI_BASE_URL`.
 
 ### Verifying the connection
-
-Once running, check the provider status:
 
 ```bash
 curl http://localhost:8000/api/settings/provider
@@ -234,18 +179,12 @@ You should see:
 
 ```json
 {
-  "llm_provider": "lmstudio",
-  "models": { "primary": "your-model-name", ... },
-  "lmstudio": { "status": "ok", "models_loaded": 1 }
+  "provider": "openai",
+  "base_url": "http://localhost:11434/v1",
+  "endpoint": { "status": "ok", "models_loaded": 2 },
+  "models": { "primary": "llama3.1:8b", "embedding": "text-embedding-3-small", "routing": "llama3.1:8b", "vision": "" }
 }
 ```
-
-### Tips
-
-- **RAM**: 7B models need ~6 GB RAM, 13B models need ~10 GB. Keep this in mind alongside Supabase services.
-- **GPU offloading**: Enable GPU layers in LM Studio for much faster inference.
-- **Routing model**: If unset, the primary model handles both reasoning and routing. For faster routing, load a smaller model and set `LMSTUDIO_ROUTING_MODEL` to its name.
-- **Embedding model**: Must be loaded separately in LM Studio alongside your chat model. If you skip local embeddings, keep `EMBEDDING_PROVIDER=openrouter` — embeddings are routed through OpenRouter using the same API key as chat, no separate key needed.
 
 ## Project Structure
 
@@ -269,8 +208,8 @@ slideguide/
 │   │       ├── storage.py   # Supabase Storage operations
 │   │       └── uploads.py   # Upload metadata CRUD
 │   ├── llm/            # LLM clients
-│   │   ├── client.py   # OpenRouter with retry + circuit breaker
-│   │   ├── discovery.py # LM Studio model auto-discovery
+│   │   ├── client.py   # OpenAI-compatible client with retry + circuit breaker
+│   │   ├── discovery.py # Endpoint model discovery (/v1/models)
 │   │   ├── models.py   # Model configs and pricing
 │   │   ├── providers.py # Provider config resolution (cloud vs local)
 │   │   ├── streaming.py # SSE stream handler
@@ -317,8 +256,8 @@ slideguide/
 |-------|---------------|
 | **RAG Pipeline** | Hybrid search (semantic + PostgreSQL full-text), Reciprocal Rank Fusion, MMR diversity ranking |
 | **Agentic AI** | LangGraph multi-node graph with conditional routing, tool calling, state persistence |
-| **LLM Engineering** | Retry with exponential backoff, circuit breaker, model fallback chain, cost tracking, local LLM support via LM Studio |
-| **Provider Abstraction** | Pluggable provider config, auto-discovery of local models, adaptive tool-calling compatibility layer |
+| **LLM Engineering** | Retry with exponential backoff, circuit breaker, cost tracking, pluggable OpenAI-compatible endpoint (cloud or local/keyless) |
+| **Provider Abstraction** | Single OpenAI-compatible client (any endpoint), model discovery, adaptive tool-calling compatibility layer |
 | **Prompt Engineering** | 5 explanation modes, adaptive quiz difficulty, neurodivergent-friendly formatting |
 | **Document Processing** | PDF (PyMuPDF) + PPTX parsing, OCR with VLM fallback, slide-aware chunking |
 | **Multimodal** | VLM image descriptions for charts/diagrams, base64 encoding, context injection |

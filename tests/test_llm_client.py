@@ -1,35 +1,27 @@
 """Tests for the LLM client components."""
 
-import pytest
-from backend.llm.models import MODELS, FALLBACK_CHAIN, estimate_cost
+from backend.config import settings
+from backend.llm.models import get_fallback_chain
 from backend.monitoring.metrics import MetricsCollector, estimate_cost as metrics_estimate
 
 
-class TestModelConfig:
-    """Tests for model configuration."""
+class TestModelSelection:
+    """Tests for model selection with the single OpenAI-compatible endpoint."""
 
-    def test_models_registry_not_empty(self):
-        """MODELS registry has entries."""
-        assert len(MODELS) > 0
+    def test_fallback_chain_is_primary_model(self):
+        """The fallback chain is just the configured primary model."""
+        assert get_fallback_chain() == [settings.active_primary_model]
 
-    def test_fallback_chain_not_empty(self):
-        """FALLBACK_CHAIN has entries."""
-        assert len(FALLBACK_CHAIN) > 0
+    def test_routing_falls_back_to_primary(self):
+        """active_routing_model falls back to the primary model when unset."""
+        assert settings.active_routing_model in (
+            settings.routing_model or settings.primary_model,
+            settings.primary_model,
+        )
 
-    def test_all_fallback_models_in_registry(self):
-        """Every model in the fallback chain is in the registry."""
-        for model_id in FALLBACK_CHAIN:
-            assert model_id in MODELS, f"Fallback model {model_id} not in MODELS"
-
-    def test_estimate_cost_known_model(self):
-        """Cost estimation works for known models."""
-        cost = estimate_cost("anthropic/claude-sonnet-4", 1000, 500)
-        assert cost > 0
-
-    def test_estimate_cost_unknown_model(self):
-        """Cost estimation falls back for unknown models."""
-        cost = estimate_cost("unknown/model", 1000, 500)
-        assert cost > 0  # Uses default pricing
+    def test_estimate_cost_unknown_model_is_free(self):
+        """Unknown models (e.g. local endpoints) are tracked at $0.00."""
+        assert metrics_estimate("some-local-model", 1000, 500) == 0.0
 
 
 class TestCircuitBreaker:

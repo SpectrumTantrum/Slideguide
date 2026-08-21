@@ -130,7 +130,7 @@ For short_answer, set options to null."""
 
     response = await client.chat(
         messages=[{"role": "user", "content": prompt}],
-        model=settings.routing_model,  # Haiku for cheap generation
+        model=settings.active_routing_model,
         temperature=0.8,
         max_tokens=500,
     )
@@ -193,7 +193,7 @@ Be encouraging regardless of whether they got it right or wrong."""
 
     response = await client.chat(
         messages=[{"role": "user", "content": prompt}],
-        model=settings.routing_model,  # Haiku
+        model=settings.active_routing_model,
         temperature=0.3,
         max_tokens=300,
     )

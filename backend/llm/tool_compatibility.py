@@ -17,7 +17,6 @@ import re
 import uuid
 from typing import Any
 
-from backend.config import settings
 from backend.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
@@ -109,9 +108,11 @@ class ToolCompatibilityLayer:
         return self._mode
 
     def _should_use_prompt_mode(self) -> bool:
-        """Check if we should use prompt-based tool injection."""
-        if settings.llm_provider == "openrouter":
-            return False  # Cloud models have reliable native tool use
+        """Check if we should use prompt-based tool injection.
+
+        Start with native OpenAI-format tool calling and only switch to
+        prompt-based injection after repeated native-tool parse failures.
+        """
         return self._mode == "prompt"
 
     async def wrap_chat_call(
