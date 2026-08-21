@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter
 
 from backend.config import settings
+from backend.llm.runtime import get_active_provider
 from backend.monitoring.metrics import metrics
 
 router = APIRouter(tags=["monitoring"])
@@ -33,10 +34,12 @@ def _check_supabase() -> str:
 
 
 async def _check_endpoint() -> dict:
-    """Check the configured OpenAI-compatible endpoint's reachability."""
-    from backend.llm.discovery import check_endpoint_health
+    """Check the active chat provider SDK and the embeddings endpoint."""
+    from backend.llm.discovery import check_active_provider_health, check_endpoint_health
 
-    return await check_endpoint_health(settings.openai_base_url)
+    chat = await check_active_provider_health()
+    embeddings = await check_endpoint_health(settings.openai_base_url)
+    return {"chat": chat, "embeddings": embeddings}
 
 
 @router.get("/health")
@@ -47,17 +50,18 @@ async def health_check() -> dict:
     }
 
     endpoint_health = await _check_endpoint()
-    checks["llm_endpoint"] = endpoint_health["status"]
-    checks["llm_endpoint_models"] = endpoint_health["models_loaded"]
+    checks["chat_provider"] = get_active_provider()
+    checks["llm_endpoint"] = endpoint_health["chat"]["status"]
+    checks["llm_endpoint_models"] = endpoint_health["chat"]["models_loaded"]
+    checks["embeddings_endpoint"] = endpoint_health["embeddings"]["status"]
 
     all_ok = all(
         v == "ok" for k, v in checks.items()
-        if isinstance(v, str) and k != "llm_endpoint_models"
+        if isinstance(v, str) and k not in {"llm_endpoint_models", "chat_provider"}
     )
-    # Supabase and the LLM endpoint are both required.
-    critical_ok = (
-        checks["supabase"] == "ok" and checks.get("llm_endpoint") == "ok"
-    )
+    # Supabase and the active chat SDK are required. Embeddings may be down
+    # independently when chat is billed to Cursor.
+    critical_ok = checks["supabase"] == "ok" and checks.get("llm_endpoint") == "ok"
 
     if all_ok:
         status = "healthy"
@@ -117,6 +121,7 @@ async def get_metrics() -> dict:
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "endpoint": {
+            "provider": get_active_provider(),
             "base_url": settings.openai_base_url,
             "primary_model": settings.active_primary_model,
             "embedding_model": settings.active_embedding_model,

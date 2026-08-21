@@ -97,6 +97,13 @@ export async function getProviderConfig(): Promise<ProviderConfig> {
   return request("/settings/provider");
 }
 
+export async function switchProvider(provider: ProviderConfig["provider"]): Promise<ProviderConfig> {
+  return request("/settings/provider", {
+    method: "POST",
+    body: JSON.stringify({ provider }),
+  });
+}
+
 export async function getAvailableModels(): Promise<ModelInfo[]> {
   return request<{ models: ModelInfo[] }>("/settings/models").then(
     (r) => r.models

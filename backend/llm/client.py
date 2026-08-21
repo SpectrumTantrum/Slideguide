@@ -1,16 +1,16 @@
 """
 LLM client wrappers for chat and embeddings.
 
-Talks to a single user-configured OpenAI-compatible endpoint via the OpenAI
-SDK.
+Chat is dispatched to the active provider SDK (OpenAI or Cursor) so
+different subscriptions can bill tutoring usage. Embeddings always use
+the OpenAI-compatible endpoint.
 
 LLMClient handles:
-- Chat completions
+- Provider SDK dispatch
 - Retry with exponential backoff (3 attempts)
 - Circuit breaker (opens after 5 consecutive failures)
 - Automatic cost tracking via MetricsCollector
-
-EmbeddingClient handles embeddings via the same endpoint.
+- Cursor-first model fallback when the Cursor route is active
 """
 
 from __future__ import annotations
@@ -18,13 +18,15 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import openai
 
 from backend.config import settings
 from backend.llm.models import get_fallback_chain
-from backend.llm.providers import get_provider_config
+from backend.llm.providers import create_chat_provider, get_embedding_config
+from backend.llm.runtime import get_active_provider
 from backend.monitoring.logger import get_logger
 from backend.monitoring.metrics import metrics
 
@@ -80,22 +82,40 @@ class CircuitBreaker:
             )
 
 
+def _is_retryable(exc: Exception) -> bool:
+    """True for transient provider/SDK failures worth retrying."""
+    if isinstance(exc, (openai.APITimeoutError, openai.APIConnectionError)):
+        return True
+    if isinstance(exc, openai.APIStatusError):
+        return exc.status_code in (429, 500, 502, 503)
+    if getattr(exc, "is_retryable", False):
+        return True
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    return status in (429, 500, 502, 503)
+
+
 class LLMClient:
     """
     LLM client with retry, circuit breaker, and cost tracking.
 
-    Uses the OpenAI SDK pointed at the configured OpenAI-compatible endpoint.
+    Resolves the active provider SDK on each call so the app can switch
+    subscriptions (Cursor vs OpenAI-compatible) without restarting.
     """
 
     def __init__(self) -> None:
-        self._provider_config = get_provider_config()
-        self._client = openai.AsyncOpenAI(**self._provider_config.client_kwargs())
         self._circuit = CircuitBreaker()
+        self._providers: dict[str, Any] = {}
+
+    def _adapter(self) -> Any:
+        name = get_active_provider()
+        if name not in self._providers:
+            self._providers[name] = create_chat_provider(name)
+        return self._providers[name]
 
     @property
     def provider(self) -> str:
-        """Name of the endpoint (always the OpenAI-compatible provider)."""
-        return self._provider_config.name
+        """Name of the active chat provider SDK."""
+        return get_active_provider()
 
     async def chat(
         self,
@@ -117,7 +137,6 @@ class LLMClient:
             tools=tools,
             temperature=temperature,
             max_tokens=max_tokens,
-            stream=False,
         )
 
     async def stream_chat(
@@ -134,46 +153,21 @@ class LLMClient:
         Each chunk is a dict with: choices[0].delta.content, etc.
         """
         model = model or settings.active_primary_model
-
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": True,
-        }
-        if tools:
-            kwargs["tools"] = tools
-
-        start_time = time.perf_counter()
+        adapter = self._adapter()
 
         try:
-            stream = await self._client.chat.completions.create(**kwargs)
-
-            async for chunk in stream:
-                yield {
-                    "id": chunk.id,
-                    "choices": [
-                        {
-                            "delta": {
-                                "content": chunk.choices[0].delta.content if chunk.choices else None,
-                                "tool_calls": (
-                                    [tc.model_dump() for tc in chunk.choices[0].delta.tool_calls]
-                                    if chunk.choices and chunk.choices[0].delta.tool_calls
-                                    else None
-                                ),
-                                "role": chunk.choices[0].delta.role if chunk.choices else None,
-                            },
-                            "finish_reason": chunk.choices[0].finish_reason if chunk.choices else None,
-                        }
-                    ],
-                }
-
+            async for chunk in adapter.stream_chat(
+                messages=messages,
+                model=model,
+                tools=tools,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            ):
+                yield chunk
             self._circuit.record_success()
-
         except Exception as e:
             self._circuit.record_failure()
-            logger.error("stream_chat_failed", model=model, error=str(e))
+            logger.error("stream_chat_failed", model=model, provider=self.provider, error=str(e))
             raise
 
     async def _call_with_retry(
@@ -183,10 +177,10 @@ class LLMClient:
         tools: list[dict[str, Any]] | None,
         temperature: float,
         max_tokens: int,
-        stream: bool,
     ) -> dict[str, Any]:
         """Execute an API call with retry logic and model fallback."""
         models_to_try = [model] + [m for m in get_fallback_chain() if m != model]
+        adapter = self._adapter()
 
         for model_id in models_to_try:
             if not self._circuit.can_execute():
@@ -196,68 +190,58 @@ class LLMClient:
             for attempt in range(MAX_RETRIES):
                 try:
                     start_time = time.perf_counter()
-
-                    kwargs: dict[str, Any] = {
-                        "model": model_id,
-                        "messages": messages,
-                        "temperature": temperature,
-                        "max_tokens": max_tokens,
-                    }
-                    if tools:
-                        kwargs["tools"] = tools
-
-                    response = await self._client.chat.completions.create(**kwargs)
+                    response = await adapter.chat(
+                        messages=messages,
+                        model=model_id,
+                        tools=tools,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
                     elapsed_ms = (time.perf_counter() - start_time) * 1000
-
                     self._circuit.record_success()
 
-                    # Track cost
-                    usage = response.usage
-                    if usage:
+                    usage = response.get("usage") or {}
+                    prompt_tokens = usage.get("prompt_tokens") or 0
+                    completion_tokens = usage.get("completion_tokens") or 0
+                    if prompt_tokens or completion_tokens:
                         metrics.record_llm_call(
                             model=model_id,
-                            input_tokens=usage.prompt_tokens or 0,
-                            output_tokens=usage.completion_tokens or 0,
+                            input_tokens=prompt_tokens,
+                            output_tokens=completion_tokens,
                             latency_ms=elapsed_ms,
                             operation="chat",
                             provider=self.provider,
                         )
 
-                    return response.model_dump()
+                    return response
 
-                except (openai.APITimeoutError, openai.APIConnectionError) as e:
-                    delay = min(BASE_DELAY * (2**attempt) + random.uniform(0, JITTER), MAX_DELAY)
-                    logger.warning(
-                        "llm_retry",
-                        model=model_id,
-                        attempt=attempt + 1,
-                        delay=round(delay, 1),
-                        error=str(e),
-                    )
-                    await asyncio.sleep(delay)
-
-                except openai.APIStatusError as e:
-                    if e.status_code in (429, 500, 502, 503):
-                        delay = min(BASE_DELAY * (2**attempt) + random.uniform(0, JITTER), MAX_DELAY)
+                except Exception as e:
+                    if _is_retryable(e) and attempt < MAX_RETRIES - 1:
+                        delay = min(
+                            BASE_DELAY * (2**attempt) + random.uniform(0, JITTER),
+                            MAX_DELAY,
+                        )
                         logger.warning(
                             "llm_retry",
                             model=model_id,
+                            provider=self.provider,
                             attempt=attempt + 1,
-                            status_code=e.status_code,
                             delay=round(delay, 1),
+                            error=str(e),
                         )
                         await asyncio.sleep(delay)
-                    else:
-                        self._circuit.record_failure()
-                        raise
+                        continue
+                    if _is_retryable(e):
+                        break
+                    self._circuit.record_failure()
+                    raise
 
-            # All retries exhausted for this model
             self._circuit.record_failure()
-            logger.error("llm_model_exhausted", model=model_id)
+            logger.error("llm_model_exhausted", model=model_id, provider=self.provider)
 
         raise openai.APIConnectionError(
             message="All models in fallback chain exhausted",
-            request=None,
+            request=None,  # type: ignore[arg-type]
         )
 
 
@@ -265,7 +249,7 @@ class EmbeddingClient:
     """Embedding client using the configured OpenAI-compatible endpoint."""
 
     def __init__(self) -> None:
-        self._provider_config = get_provider_config()
+        self._provider_config = get_embedding_config()
         self._client = openai.AsyncOpenAI(**self._provider_config.client_kwargs())
 
     @property

@@ -1,18 +1,25 @@
 """
 Settings and provider information API routes.
 
-Exposes the current provider configuration and available models
-so the frontend can adapt its UI and show capability warnings.
+Exposes the current provider SDK, available subscriptions, and models
+so the frontend can switch billing (Cursor usage vs OpenAI-compatible).
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 from backend.config import settings
-from backend.llm.discovery import check_endpoint_health, fetch_models
+from backend.llm.discovery import (
+    check_active_provider_health,
+    check_endpoint_health,
+    list_active_models,
+)
+from backend.llm.providers import available_providers, provider_metadata
+from backend.llm.runtime import get_active_provider, set_active_provider
 from backend.llm.tool_compatibility import ToolCompatibilityLayer
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -27,19 +34,36 @@ def set_tool_compat(tc: ToolCompatibilityLayer) -> None:
     _tool_compat = tc
 
 
+class ProviderSwitchRequest(BaseModel):
+    """Select which subscription SDK bills chat usage."""
+
+    provider: Literal["openai", "cursor"] = Field(..., description="Chat provider SDK id")
+
+
 @router.get("/provider")
-async def get_provider_config() -> dict[str, Any]:
-    """Return the OpenAI-compatible endpoint configuration and capabilities."""
-    tool_mode = "native"
-    if _tool_compat is not None:
+async def get_provider_status() -> dict[str, Any]:
+    """Return the active provider SDK, capabilities, and switchable subscriptions."""
+    provider = get_active_provider()
+    meta = provider_metadata(provider)
+
+    tool_mode = "prompt" if provider == "cursor" else "native"
+    if provider != "cursor" and _tool_compat is not None:
         tool_mode = _tool_compat.mode
 
+    endpoint = await check_active_provider_health()
+    embeddings = await check_endpoint_health(settings.openai_base_url)
+
     return {
-        "provider": "openai",
-        "base_url": settings.openai_base_url,
-        "endpoint": await check_endpoint_health(settings.openai_base_url),
+        "provider": provider,
+        "sdk": meta["sdk"],
+        "usage": meta["usage"],
+        "label": meta["label"],
+        "base_url": settings.openai_base_url if provider == "openai" else "cursor-sdk",
+        "runtime": settings.cursor_runtime if provider == "cursor" else None,
+        "endpoint": endpoint,
+        "embeddings": embeddings,
         "capabilities": {
-            "vision": bool(settings.active_vision_model),
+            "vision": bool(settings.active_vision_model) or provider == "cursor",
             "tool_mode": tool_mode,
         },
         "models": {
@@ -48,20 +72,27 @@ async def get_provider_config() -> dict[str, Any]:
             "embedding": settings.active_embedding_model,
             "vision": settings.active_vision_model,
         },
+        "available_providers": available_providers(),
     }
+
+
+@router.post("/provider")
+async def switch_provider(body: ProviderSwitchRequest) -> dict[str, Any]:
+    """Switch the in-process chat SDK (Cursor subscription vs OpenAI-compatible)."""
+    try:
+        set_active_provider(body.provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return await get_provider_status()
 
 
 @router.get("/models")
 async def get_available_models() -> dict[str, Any]:
-    """Return the models served by the configured OpenAI-compatible endpoint."""
-    endpoint_models = await fetch_models(settings.openai_base_url)
+    """Return models from the active provider SDK (Cursor models first on that route)."""
+    provider = get_active_provider()
+    models = await list_active_models()
     return {
-        "provider": "openai",
-        "models": [
-            {
-                "id": m.get("id", ""),
-                "object": m.get("object", "model"),
-            }
-            for m in endpoint_models
-        ],
+        "provider": provider,
+        "sdk": provider_metadata(provider)["sdk"],
+        "models": models,
     }

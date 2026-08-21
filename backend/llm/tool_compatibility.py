@@ -105,15 +105,20 @@ class ToolCompatibilityLayer:
 
     @property
     def mode(self) -> str:
+        from backend.llm.runtime import get_active_provider
+
+        if get_active_provider() == "cursor":
+            return "prompt"
         return self._mode
 
     def _should_use_prompt_mode(self) -> bool:
         """Check if we should use prompt-based tool injection.
 
-        Start with native OpenAI-format tool calling and only switch to
-        prompt-based injection after repeated native-tool parse failures.
+        Cursor's agent SDK has no OpenAI-format tools, so that route is
+        always prompt-based. Otherwise start native and switch after
+        repeated parse failures.
         """
-        return self._mode == "prompt"
+        return self.mode == "prompt"
 
     async def wrap_chat_call(
         self,

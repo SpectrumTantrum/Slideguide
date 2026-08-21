@@ -55,6 +55,7 @@ interface SlideGuideStore {
   loadHistory: () => Promise<void>;
   loadSlides: () => Promise<void>;
   loadProviderConfig: () => Promise<void>;
+  switchProvider: (provider: ProviderConfig["provider"]) => Promise<void>;
   setCurrentSlide: (slide: number) => void;
   setExplanationMode: (mode: string) => void;
   setPacing: (pacing: string) => void;
@@ -243,11 +244,27 @@ export const useStore = create<SlideGuideStore>((set, get) => ({
 
   loadProviderConfig: async () => {
     try {
-      const config = await api.getProviderConfig();
+      const stored =
+        typeof window !== "undefined"
+          ? window.localStorage.getItem("slideguide-llm-provider")
+          : null;
+      const config = stored
+        ? await api.switchProvider(stored as ProviderConfig["provider"]).catch(() =>
+            api.getProviderConfig()
+          )
+        : await api.getProviderConfig();
       set({ provider: config });
     } catch {
       // Silent fail — provider info is informational
     }
+  },
+
+  switchProvider: async (provider) => {
+    const config = await api.switchProvider(provider);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("slideguide-llm-provider", config.provider);
+    }
+    set({ provider: config });
   },
 
   setCurrentSlide: (slide: number) => set({ currentSlide: slide }),

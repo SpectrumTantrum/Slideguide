@@ -68,10 +68,29 @@ export interface QuizScore {
   confidence?: number;
 }
 
+export type ProviderId = "openai" | "cursor";
+
+export interface AvailableProvider {
+  id: ProviderId;
+  label: string;
+  sdk: string;
+  usage: string;
+  description?: string;
+  configured: boolean;
+}
+
 export interface ProviderConfig {
-  provider: "openai";
+  provider: ProviderId;
+  sdk: string;
+  usage: string;
+  label: string;
   base_url: string;
+  runtime?: string | null;
   endpoint: {
+    status: "ok" | "unreachable" | "unconfigured";
+    models_loaded: number;
+  };
+  embeddings?: {
     status: "ok" | "unreachable";
     models_loaded: number;
   };
@@ -85,11 +104,13 @@ export interface ProviderConfig {
     embedding: string;
     vision: string;
   };
+  available_providers: AvailableProvider[];
 }
 
 export interface ModelInfo {
   id: string;
   display_name?: string;
+  preferred?: boolean;
   supports_tools?: boolean;
   supports_vision?: boolean;
 }

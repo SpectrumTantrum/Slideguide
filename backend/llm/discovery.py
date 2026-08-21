@@ -1,8 +1,8 @@
 """
-Model discovery for the configured OpenAI-compatible endpoint.
+Model discovery for the active chat provider SDK.
 
-Queries the endpoint's ``/v1/models`` route to list available models and
-check reachability.
+The OpenAI-compatible path queries ``/v1/models``. The Cursor path uses
+``cursor-sdk`` (``Cursor.models.list``), preferring Cursor-owned models.
 """
 
 from __future__ import annotations
@@ -52,3 +52,17 @@ async def check_endpoint_health(base_url: str) -> dict[str, Any]:
     except Exception:
         return {"status": "unreachable", "models_loaded": 0}
     return {"status": "ok", "models_loaded": len(data.get("data", []))}
+
+
+async def list_active_models() -> list[dict[str, Any]]:
+    """List models from the active chat provider SDK."""
+    from backend.llm.providers import create_chat_provider
+
+    return await create_chat_provider().list_models()
+
+
+async def check_active_provider_health() -> dict[str, Any]:
+    """Reachability check for the active chat provider SDK."""
+    from backend.llm.providers import create_chat_provider
+
+    return await create_chat_provider().health()

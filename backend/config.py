@@ -7,7 +7,12 @@ Fails fast with clear error messages if required variables are missing.
 
 from __future__ import annotations
 
+from typing import Literal
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_CURSOR_DEFAULT_MODEL = "composer-2.5"
 
 
 class Settings(BaseSettings):
@@ -19,18 +24,29 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    # Which chat SDK bills tutoring tokens. ``openai`` uses the OpenAI SDK
+    # against openai_base_url. ``cursor`` uses cursor-sdk and Cursor usage.
+    llm_provider: Literal["openai", "cursor"] = "openai"
+
     # OpenAI-compatible endpoint. Point openai_base_url at ANY OpenAI-compatible
     # /v1 API you choose — real OpenAI, Ollama, vLLM, LocalAI, OpenRouter,
     # LM Studio, Together, Groq, or a self-hosted gateway. The API key may be
     # left empty for endpoints that don't require auth (a placeholder is sent so
     # the OpenAI SDK still initializes). Model names are whatever your endpoint
     # serves. The embedding model must return 1536-d vectors (pgvector schema).
+    # Embeddings always use this endpoint, even when chat is billed to Cursor.
     openai_base_url: str = "https://api.openai.com/v1"
     openai_api_key: str = ""
     primary_model: str = ""
     routing_model: str = ""  # falls back to primary_model if empty
     embedding_model: str = ""
     vision_model: str = ""  # optional; leave empty to disable vision
+
+    # Cursor SDK (https://cursor.com/docs/sdk/python). Chat billed to CURSOR_API_KEY.
+    cursor_api_key: str = ""
+    cursor_runtime: Literal["local", "cloud"] = "local"
+    cursor_model: str = ""  # optional; defaults to Composer 2.5
+    cursor_workspace: str = ""  # optional isolated cwd for local agents
 
     # Supabase
     supabase_url: str = "http://127.0.0.1:54321"
@@ -50,12 +66,27 @@ class Settings(BaseSettings):
     max_tokens_per_session: int = 100_000
     max_upload_size_mb: int = 50
 
+    @field_validator("llm_provider", "cursor_runtime", mode="before")
+    @classmethod
+    def _lowercase_choice(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
     @property
     def active_primary_model(self) -> str:
+        from backend.llm.runtime import get_active_provider
+
+        if get_active_provider() == "cursor":
+            return self.cursor_model or _CURSOR_DEFAULT_MODEL
         return self.primary_model
 
     @property
     def active_routing_model(self) -> str:
+        from backend.llm.runtime import get_active_provider
+
+        if get_active_provider() == "cursor":
+            return self.routing_model or self.cursor_model or _CURSOR_DEFAULT_MODEL
         return self.routing_model or self.primary_model
 
     @property
@@ -64,7 +95,13 @@ class Settings(BaseSettings):
 
     @property
     def active_vision_model(self) -> str:
-        return self.vision_model
+        from backend.llm.runtime import get_active_provider
+
+        if self.vision_model:
+            return self.vision_model
+        if get_active_provider() == "cursor":
+            return self.cursor_model or _CURSOR_DEFAULT_MODEL
+        return ""
 
     @property
     def is_production(self) -> bool:

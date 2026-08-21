@@ -1,1 +1,1 @@
-"""LLM integration: OpenRouter client, model configs, streaming."""
+"""LLM integration: provider SDKs (OpenAI-compatible and Cursor), streaming."""

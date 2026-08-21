@@ -22,8 +22,9 @@ graph TB
         Memory[Memory System]
     end
 
-    subgraph LLM["OpenAI-compatible endpoint (your choice)"]
-        Endpoint[Chat + Embeddings API]
+    subgraph LLM["Provider SDKs (pick a subscription)"]
+        CursorSDK[Cursor SDK / Cursor usage]
+        Endpoint[OpenAI SDK / OpenAI-compatible endpoint]
     end
 
     subgraph Supabase["Supabase"]
@@ -39,6 +40,7 @@ graph TB
     Agent -->|State Persistence| Memory
     RAG -->|Vector search| Postgres
     RAG -->|Embeddings| Endpoint
+    Agent -->|Chat| CursorSDK
     Agent -->|Chat| Endpoint
     Memory --> Postgres
     Parsers -->|File storage| Storage
@@ -51,7 +53,7 @@ graph TB
 | Frontend | Next.js 14, TypeScript, Tailwind CSS, Zustand | UI and state management |
 | Backend | FastAPI, Python 3.11+ | API server |
 | Agent | LangGraph | Multi-node stateful tutoring agent |
-| LLM | Any OpenAI-compatible endpoint (OpenAI, Ollama, vLLM, LocalAI, OpenRouter, LM Studio, …) | Reasoning and generation |
+| LLM | Cursor SDK (`cursor-sdk`) or any OpenAI-compatible endpoint | Reasoning and generation (Cursor usage or endpoint bill) |
 | Embeddings | Any OpenAI-compatible embeddings endpoint (1536-d) | Semantic search vectors |
 | Database | Supabase (PostgreSQL + pgvector) | Vector search, sessions, progress, cost tracking |
 | Storage | Supabase Storage | Uploaded file persistence |
@@ -68,6 +70,7 @@ graph TB
 - **SSE streaming**: Real-time token-by-token response streaming
 - **Circuit breaker**: Retries with backoff and opens on repeated endpoint failures
 - **Bring-your-own endpoint**: Point at any OpenAI-compatible API — cloud or fully offline/keyless (Ollama, vLLM, LocalAI, …)
+- **Cursor subscription**: Set `LLM_PROVIDER=cursor` (or switch in the session banner) to bill tutoring chat to Cursor usage via the official Python SDK. Composer models are preferred first.
 
 ## Setup
 
@@ -77,7 +80,7 @@ graph TB
 - Node.js 18+
 - [Docker](https://docs.docker.com/get-docker/) (required by Supabase CLI)
 - [Supabase CLI](https://supabase.com/docs/guides/cli) (or a hosted Supabase project)
-- An OpenAI-compatible endpoint for chat + embeddings (see [Choosing your LLM endpoint](#choosing-your-llm-endpoint-openai-compatible)) — this can be a hosted API or a fully local, keyless server
+- A chat provider: a [Cursor API key](https://cursor.com/dashboard/api) and/or an OpenAI-compatible endpoint for chat + embeddings (see [Choosing your LLM](#choosing-your-llm-provider-sdk))
 - [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) (optional — only needed for OCR on image-heavy slides)
 
 ### 1. Clone and configure
@@ -135,11 +138,40 @@ Visit `http://localhost:3000` to start using SlideGuide.
 pytest tests/ -v
 ```
 
-## Choosing your LLM endpoint (OpenAI-compatible)
+## Choosing your LLM (provider SDK)
 
-SlideGuide talks to a single OpenAI-compatible `/v1` API that **you choose** for
-chat, embeddings, and (optionally) vision. It can be a hosted service or a fully
-local, keyless server:
+SlideGuide can bill tutoring chat to different subscriptions by swapping the
+provider SDK. Embeddings always use an OpenAI-compatible endpoint (Cursor has
+no embedding API).
+
+### Cursor SDK (Cursor usage)
+
+Set `LLM_PROVIDER=cursor` and a `CURSOR_API_KEY` from
+[Cursor Dashboard → API Keys](https://cursor.com/dashboard/api). Chat and
+vision then run through the official [`cursor-sdk`](https://cursor.com/docs/sdk/python)
+and appear on your Cursor usage dashboard under the SDK tag.
+
+On this route SlideGuide **always prefers Cursor models first**: `composer-2.5`,
+then `composer-2`, then Cursor Router (`auto-smart`). Override with `CURSOR_MODEL`
+if you want a different Cursor-owned id first. You can also switch SDKs from the
+session banner once the key is configured.
+
+```bash
+LLM_PROVIDER=cursor
+CURSOR_API_KEY=crsr_...
+CURSOR_RUNTIME=local          # local (default) or cloud
+CURSOR_MODEL=                 # optional; defaults to composer-2.5
+```
+
+Local agents run text-only (`tools=[]`) in an isolated workspace so the Cursor
+agent cannot edit this repo. Cloud runtime uses a no-repo agent when enabled
+for your team.
+
+### OpenAI-compatible endpoint
+
+When `LLM_PROVIDER=openai`, SlideGuide talks to a single OpenAI-compatible
+`/v1` API that **you choose** for chat, embeddings, and (optionally) vision.
+It can be a hosted service or a fully local, keyless server:
 
 - **OpenAI** — `https://api.openai.com/v1`
 - **OpenRouter** — `https://openrouter.ai/api/v1`
@@ -167,7 +199,7 @@ VISION_MODEL=                                # optional; leave empty to disable 
 - **No key required**: if `OPENAI_API_KEY` is empty, a harmless placeholder is sent so the OpenAI SDK still initializes — keyless local endpoints work out of the box.
 - **Tool compatibility**: starts with native OpenAI-format tool calling; if the model fails to produce valid tool calls 3 times in a row, it switches to a prompt-based fallback that injects tool schemas into the system prompt.
 - **Cost tracking**: recognized model IDs are priced; unknown/local models are tracked at $0.00.
-- **Health + models**: `GET /api/settings/provider` reports the endpoint and its reachability; `GET /api/settings/models` lists models discovered from `OPENAI_BASE_URL`.
+- **Health + models**: `GET /api/settings/provider` reports the active SDK and its reachability; `POST /api/settings/provider` switches SDKs; `GET /api/settings/models` lists models (Cursor-owned first on the Cursor route).
 
 ### Verifying the connection
 
@@ -180,6 +212,8 @@ You should see:
 ```json
 {
   "provider": "openai",
+  "sdk": "openai",
+  "usage": "openai_compatible_endpoint",
   "base_url": "http://localhost:11434/v1",
   "endpoint": { "status": "ok", "models_loaded": 2 },
   "models": { "primary": "llama3.1:8b", "embedding": "text-embedding-3-small", "routing": "llama3.1:8b", "vision": "" }
@@ -208,10 +242,13 @@ slideguide/
 │   │       ├── storage.py   # Supabase Storage operations
 │   │       └── uploads.py   # Upload metadata CRUD
 │   ├── llm/            # LLM clients
-│   │   ├── client.py   # OpenAI-compatible client with retry + circuit breaker
-│   │   ├── discovery.py # Endpoint model discovery (/v1/models)
-│   │   ├── models.py   # Model configs and pricing
-│   │   ├── providers.py # Provider config resolution (cloud vs local)
+│   │   ├── client.py   # Provider-SDK facade with retry + circuit breaker
+│   │   ├── cursor_provider.py # cursor-sdk adapter (Cursor subscription)
+│   │   ├── openai_provider.py # OpenAI SDK adapter
+│   │   ├── discovery.py # Provider model discovery
+│   │   ├── models.py   # Cursor-first fallback chains
+│   │   ├── providers.py # SDK registry + embedding endpoint config
+│   │   ├── runtime.py  # In-process provider switch
 │   │   ├── streaming.py # SSE stream handler
 │   │   ├── tool_compatibility.py # Native ↔ prompt-based tool use adapter
 │   │   └── vision.py   # VLM image understanding
@@ -256,8 +293,8 @@ slideguide/
 |-------|---------------|
 | **RAG Pipeline** | Hybrid search (semantic + PostgreSQL full-text), Reciprocal Rank Fusion, MMR diversity ranking |
 | **Agentic AI** | LangGraph multi-node graph with conditional routing, tool calling, state persistence |
-| **LLM Engineering** | Retry with exponential backoff, circuit breaker, cost tracking, pluggable OpenAI-compatible endpoint (cloud or local/keyless) |
-| **Provider Abstraction** | Single OpenAI-compatible client (any endpoint), model discovery, adaptive tool-calling compatibility layer |
+| **LLM Engineering** | Retry with exponential backoff, circuit breaker, cost tracking, pluggable provider SDKs (Cursor usage or OpenAI-compatible) |
+| **Provider Abstraction** | OpenAI SDK + Cursor SDK registry, Cursor-first model preference, model discovery, adaptive tool-calling compatibility layer |
 | **Prompt Engineering** | 5 explanation modes, adaptive quiz difficulty, neurodivergent-friendly formatting |
 | **Document Processing** | PDF (PyMuPDF) + PPTX parsing, OCR with VLM fallback, slide-aware chunking |
 | **Multimodal** | VLM image descriptions for charts/diagrams, base64 encoding, context injection |
@@ -277,8 +314,9 @@ slideguide/
 | `GET` | `/api/session/{session_id}` | Get session state |
 | `POST` | `/api/session/{session_id}/message` | Send a message (returns SSE stream) |
 | `GET` | `/api/session/{session_id}/history` | Get chat history for a session |
-| `GET` | `/api/settings/provider` | Get current provider configuration |
-| `GET` | `/api/settings/models` | List available models |
+| `GET` | `/api/settings/provider` | Get current provider SDK and capabilities |
+| `POST` | `/api/settings/provider` | Switch chat SDK (`openai` or `cursor`) |
+| `GET` | `/api/settings/models` | List available models for the active SDK |
 | `GET` | `/health/live` | Liveness check |
 | `GET` | `/health/ready` | Readiness check |
 
