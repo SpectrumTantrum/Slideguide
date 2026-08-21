@@ -26,6 +26,9 @@ pytest tests/test_agent.py
 # Run a specific test
 pytest tests/test_agent.py::test_initial_state_creation -v
 
+# Cursor SDK e2e (live tests skip unless CURSOR_API_KEY is set)
+pytest tests/e2e -v
+
 # Lint
 ruff check backend/ tests/
 

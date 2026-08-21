@@ -136,6 +136,9 @@ Visit `http://localhost:3000` to start using SlideGuide.
 
 ```bash
 pytest tests/ -v
+
+# Cursor SDK e2e (live tests skip unless CURSOR_API_KEY is set)
+pytest tests/e2e -v
 ```
 
 ## Choosing your LLM (provider SDK)

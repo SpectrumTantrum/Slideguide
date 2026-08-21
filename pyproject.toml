@@ -43,6 +43,10 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "e2e: process or live end-to-end tests",
+    "live: hits a real provider API (skipped without credentials)",
+]
 
 [tool.setuptools.packages.find]
 include = ["backend*"]
