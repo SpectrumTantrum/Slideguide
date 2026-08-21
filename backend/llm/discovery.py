@@ -81,6 +81,42 @@ async def check_lmstudio_health() -> dict[str, Any]:
         return {"status": "unreachable", "models_loaded": 0}
 
 
+async def fetch_models(base_url: str) -> list[dict[str, Any]]:
+    """
+    Query any OpenAI-compatible ``/models`` endpoint (uncached).
+
+    Returns a list of model dicts, or an empty list if the endpoint is
+    unreachable. Used for the generic "openai" provider.
+    """
+    url = f"{base_url.rstrip('/')}/models"
+    try:
+        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as exc:
+        logger.warning("model_discovery_failed", url=url, error=str(exc))
+        return []
+    return data.get("data", [])
+
+
+async def check_endpoint_health(base_url: str) -> dict[str, Any]:
+    """
+    Check reachability of an OpenAI-compatible endpoint's ``/models`` route.
+
+    Returns ``{"status": "ok"|"unreachable", "models_loaded": int}``.
+    """
+    url = f"{base_url.rstrip('/')}/models"
+    try:
+        async with httpx.AsyncClient(timeout=_REQUEST_TIMEOUT) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception:
+        return {"status": "unreachable", "models_loaded": 0}
+    return {"status": "ok", "models_loaded": len(data.get("data", []))}
+
+
 async def auto_select_model(role: str = "primary") -> str | None:
     """
     Auto-select a loaded model for a given role.

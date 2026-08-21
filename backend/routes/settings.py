@@ -12,7 +12,12 @@ from typing import Any
 from fastapi import APIRouter
 
 from backend.config import settings
-from backend.llm.discovery import check_lmstudio_health, discover_local_models
+from backend.llm.discovery import (
+    check_endpoint_health,
+    check_lmstudio_health,
+    discover_local_models,
+    fetch_models,
+)
 from backend.llm.models import MODELS
 from backend.llm.tool_compatibility import ToolCompatibilityLayer
 
@@ -31,9 +36,12 @@ def set_tool_compat(tc: ToolCompatibilityLayer) -> None:
 @router.get("/provider")
 async def get_provider_config() -> dict[str, Any]:
     """Return the current provider configuration and capabilities."""
-    vision_available = True
-    if settings.llm_provider == "lmstudio" and settings.vision_provider != "lmstudio":
+    # Vision needs a real cloud key only when routed through OpenRouter.
+    # Self-hosted providers (LM Studio / custom OpenAI-compatible) are trusted.
+    if settings.vision_provider == "openrouter":
         vision_available = bool(settings.openrouter_api_key)
+    else:
+        vision_available = True
 
     tool_mode = "native"
     if _tool_compat is not None:
@@ -51,13 +59,17 @@ async def get_provider_config() -> dict[str, Any]:
             "primary": settings.active_primary_model,
             "routing": settings.active_routing_model,
             "embedding": settings.active_embedding_model,
-            "vision": settings.vision_model,
+            "vision": settings.active_vision_model,
         },
     }
 
     if settings.llm_provider == "lmstudio":
-        health = await check_lmstudio_health()
-        result["lmstudio"] = health
+        result["lmstudio"] = await check_lmstudio_health()
+    elif settings.llm_provider == "openai":
+        result["openai"] = {
+            "base_url": settings.openai_base_url,
+            **await check_endpoint_health(settings.openai_base_url),
+        }
 
     return result
 
@@ -75,6 +87,19 @@ async def get_available_models() -> dict[str, Any]:
                     "object": m.get("object", "model"),
                 }
                 for m in local_models
+            ],
+        }
+
+    if settings.llm_provider == "openai":
+        endpoint_models = await fetch_models(settings.openai_base_url)
+        return {
+            "provider": "openai",
+            "models": [
+                {
+                    "id": m.get("id", ""),
+                    "object": m.get("object", "model"),
+                }
+                for m in endpoint_models
             ],
         }
 

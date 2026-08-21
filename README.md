@@ -176,9 +176,9 @@ Each capability (chat, embeddings, vision) can be pointed at a different provide
 
 | Variable | Options | Default |
 |----------|---------|---------|
-| `LLM_PROVIDER` | `openrouter`, `lmstudio` | `openrouter` |
-| `EMBEDDING_PROVIDER` | `openrouter`, `lmstudio` | `openrouter` |
-| `VISION_PROVIDER` | `openrouter`, `lmstudio` | `openrouter` |
+| `LLM_PROVIDER` | `openrouter`, `lmstudio`, `openai` | `openrouter` |
+| `EMBEDDING_PROVIDER` | `openrouter`, `lmstudio`, `openai` | `openrouter` |
+| `VISION_PROVIDER` | `openrouter`, `lmstudio`, `openai` | `openrouter` |
 
 **Hybrid example** — local chat with cloud embeddings (best quality retrieval, free generation):
 
@@ -187,6 +187,32 @@ LLM_PROVIDER=lmstudio
 EMBEDDING_PROVIDER=openrouter
 OPENROUTER_API_KEY=sk-or-...
 ```
+
+## Using any OpenAI-compatible endpoint (`openai` provider)
+
+If you don't want an OpenRouter key, set any provider to `openai` and point it at
+an OpenAI-compatible `/v1` endpoint you choose — real OpenAI, Ollama, vLLM,
+LocalAI, Together, Groq, or a self-hosted gateway. **You decide the base URL, the
+API key, and the model names.** The key may be left empty for endpoints that
+don't require auth (a placeholder is sent so the OpenAI SDK still initializes),
+so the backend boots and runs with no OpenRouter key at all.
+
+```bash
+LLM_PROVIDER=openai
+EMBEDDING_PROVIDER=openai
+OPENAI_BASE_URL=https://api.openai.com/v1   # or http://localhost:11434/v1, etc.
+OPENAI_API_KEY=                             # empty for keyless local endpoints
+OPENAI_PRIMARY_MODEL=gpt-4o-mini            # any model your endpoint serves
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+```
+
+> **Embedding dimension:** the pgvector schema stores 1536-dimensional vectors, so
+> the endpoint used for `EMBEDDING_PROVIDER` must return 1536-d embeddings
+> (e.g. OpenAI `text-embedding-3-small`, or a model configured for 1536 dims).
+> The chat/vision endpoints have no such constraint.
+
+`GET /api/settings/provider` reports the active endpoint and its reachability, and
+`GET /api/settings/models` lists the models discovered from `OPENAI_BASE_URL`.
 
 ### How it works
 

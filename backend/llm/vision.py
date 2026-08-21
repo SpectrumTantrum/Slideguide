@@ -58,10 +58,16 @@ class VisionClient:
 
     def __init__(self) -> None:
         self._provider_config = get_vision_provider_config()
-        self._available = bool(self._provider_config.api_key and self._provider_config.api_key != "lm-studio")
+        # A real, user-supplied key means the cloud VLM path is usable.
+        placeholder_keys = {"lm-studio", "sk-no-key-required"}
+        self._available = bool(
+            self._provider_config.api_key
+            and self._provider_config.api_key not in placeholder_keys
+        )
 
-        # For lmstudio vision provider, we trust the user knows they have a vision model
-        if settings.vision_provider == "lmstudio":
+        # For self-hosted providers we trust the user has a vision-capable model
+        # loaded at the endpoint they configured.
+        if settings.vision_provider in ("lmstudio", "openai"):
             self._available = True
 
         if self._available:

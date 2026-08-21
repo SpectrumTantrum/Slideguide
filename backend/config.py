@@ -21,10 +21,15 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # Provider selection
-    llm_provider: Literal["openrouter", "lmstudio"] = "openrouter"
-    embedding_provider: Literal["openrouter", "lmstudio"] = "openrouter"
-    vision_provider: Literal["openrouter", "lmstudio"] = "openrouter"
+    # Provider selection.
+    # - "openrouter": hosted OpenRouter gateway (default).
+    # - "lmstudio":   local LM Studio server.
+    # - "openai":     any OpenAI-compatible endpoint you choose (real OpenAI,
+    #                 Ollama, vLLM, LocalAI, Together, Groq, a self-hosted
+    #                 gateway, etc.). You decide the base URL, key, and models.
+    llm_provider: Literal["openrouter", "lmstudio", "openai"] = "openrouter"
+    embedding_provider: Literal["openrouter", "lmstudio", "openai"] = "openrouter"
+    vision_provider: Literal["openrouter", "lmstudio", "openai"] = "openrouter"
 
     # OpenRouter (LLM gateway + embeddings)
     openrouter_api_key: str = ""
@@ -35,6 +40,17 @@ class Settings(BaseSettings):
     lmstudio_primary_model: str = ""
     lmstudio_routing_model: str = ""
     lmstudio_embedding_model: str = ""
+
+    # Generic OpenAI-compatible provider (used when a provider is set to "openai").
+    # Point openai_base_url at any OpenAI-compatible /v1 endpoint. The API key may
+    # be left empty for endpoints that don't require auth (a placeholder is sent so
+    # the OpenAI SDK still initializes). Model names are whatever the endpoint serves.
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_api_key: str = ""
+    openai_primary_model: str = ""
+    openai_routing_model: str = ""
+    openai_embedding_model: str = ""
+    openai_vision_model: str = ""
 
     # Model IDs (OpenRouter format, used when llm_provider=openrouter)
     primary_model: str = "anthropic/claude-sonnet-4"
@@ -71,26 +87,34 @@ class Settings(BaseSettings):
 
     @property
     def active_primary_model(self) -> str:
-        if self.is_local_llm:
+        if self.llm_provider == "lmstudio":
             return self.lmstudio_primary_model
+        if self.llm_provider == "openai":
+            return self.openai_primary_model
         return self.primary_model
 
     @property
     def active_routing_model(self) -> str:
-        if self.is_local_llm:
+        if self.llm_provider == "lmstudio":
             return self.lmstudio_routing_model or self.lmstudio_primary_model
+        if self.llm_provider == "openai":
+            return self.openai_routing_model or self.openai_primary_model
         return self.routing_model
 
     @property
     def active_embedding_model(self) -> str:
-        if self.is_local_embeddings:
+        if self.embedding_provider == "lmstudio":
             return self.lmstudio_embedding_model
+        if self.embedding_provider == "openai":
+            return self.openai_embedding_model
         return self.embedding_model
 
     @property
     def active_vision_model(self) -> str:
         if self.vision_provider == "lmstudio":
             return self.lmstudio_primary_model
+        if self.vision_provider == "openai":
+            return self.openai_vision_model
         return self.vision_model
 
     @property

@@ -14,6 +14,9 @@ export default function ProviderBanner() {
   // Nothing to show for OpenRouter (default cloud experience)
   if (!provider || provider.llm_provider === "openrouter") return null;
 
+  const isOpenAI = provider.llm_provider === "openai";
+  const health = isOpenAI ? provider.openai : provider.lmstudio;
+
   const warnings: string[] = [];
   if (!provider.capabilities.vision) warnings.push("Vision unavailable");
   if (provider.capabilities.tool_mode === "prompt")
@@ -21,7 +24,14 @@ export default function ProviderBanner() {
   if (provider.capabilities.tool_mode === "none")
     warnings.push("Tool use unavailable");
 
-  const isUnreachable = provider.lmstudio?.status === "unreachable";
+  const isUnreachable = health?.status === "unreachable";
+  const Icon = isOpenAI ? Cloud : Monitor;
+  const label = isOpenAI
+    ? "Using custom OpenAI-compatible endpoint"
+    : "Running locally via LM Studio";
+  const unreachableLabel = isOpenAI
+    ? "OpenAI-compatible endpoint unreachable"
+    : "LM Studio unreachable";
 
   return (
     <div className="flex items-center gap-2 border-b border-gray-200 bg-gray-50 px-4 py-1.5 text-xs dark:border-gray-700 dark:bg-gray-900">
@@ -30,20 +40,18 @@ export default function ProviderBanner() {
           <span className="h-2 w-2 rounded-full bg-red-500" />
           <AlertTriangle className="h-3.5 w-3.5 text-red-500" />
           <span className="text-red-600 dark:text-red-400">
-            LM Studio unreachable
+            {unreachableLabel}
           </span>
         </>
       ) : (
         <>
           <span className="h-2 w-2 rounded-full bg-green-500" />
-          <Monitor className="h-3.5 w-3.5 text-gray-500 dark:text-gray-400" />
-          <span className="text-gray-600 dark:text-gray-300">
-            Running locally via LM Studio
-          </span>
-          {provider.lmstudio && provider.lmstudio.models_loaded > 0 && (
+          <Icon className="h-3.5 w-3.5 text-gray-500 dark:text-gray-400" />
+          <span className="text-gray-600 dark:text-gray-300">{label}</span>
+          {health && health.models_loaded > 0 && (
             <span className="text-gray-400 dark:text-gray-500">
-              ({provider.lmstudio.models_loaded} model
-              {provider.lmstudio.models_loaded !== 1 ? "s" : ""} loaded)
+              ({health.models_loaded} model
+              {health.models_loaded !== 1 ? "s" : ""} available)
             </span>
           )}
         </>

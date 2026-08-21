@@ -55,6 +55,13 @@ async def _check_lmstudio() -> dict:
     return await check_lmstudio_health()
 
 
+async def _check_openai() -> dict:
+    """Check a generic OpenAI-compatible endpoint's reachability."""
+    from backend.llm.discovery import check_endpoint_health
+
+    return await check_endpoint_health(settings.openai_base_url)
+
+
 @router.get("/health")
 async def health_check() -> dict:
     """Full health check with all dependency statuses."""
@@ -70,17 +77,23 @@ async def health_check() -> dict:
         # Still check OpenRouter if vision needs it
         if settings.vision_provider == "openrouter" and settings.openrouter_api_key:
             checks["openrouter_vision"] = await _check_openrouter()
+    elif settings.llm_provider == "openai":
+        oai_health = await _check_openai()
+        checks["openai"] = oai_health["status"]
+        checks["openai_models"] = oai_health["models_loaded"]
     else:
         checks["openrouter"] = await _check_openrouter()
 
     all_ok = all(
         v == "ok" for k, v in checks.items()
-        if isinstance(v, str) and k != "lmstudio_models"
+        if isinstance(v, str) and k not in ("lmstudio_models", "openai_models")
     )
-    # Supabase is always required; LM Studio is critical when it's the LLM provider
+    # Supabase is always required; the active self-hosted LLM provider is critical too
     critical_ok = checks["supabase"] == "ok"
     if settings.llm_provider == "lmstudio":
         critical_ok = critical_ok and checks.get("lmstudio") == "ok"
+    elif settings.llm_provider == "openai":
+        critical_ok = critical_ok and checks.get("openai") == "ok"
 
     if all_ok:
         status = "healthy"

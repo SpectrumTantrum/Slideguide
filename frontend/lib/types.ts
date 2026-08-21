@@ -68,10 +68,12 @@ export interface QuizScore {
   confidence?: number;
 }
 
+export type LLMProvider = "openrouter" | "lmstudio" | "openai";
+
 export interface ProviderConfig {
-  llm_provider: "openrouter" | "lmstudio";
-  embedding_provider: "openai" | "lmstudio";
-  vision_provider: "openrouter" | "lmstudio";
+  llm_provider: LLMProvider;
+  embedding_provider: LLMProvider;
+  vision_provider: LLMProvider;
   capabilities: {
     vision: boolean;
     tool_mode: "native" | "prompt" | "none";
@@ -83,6 +85,11 @@ export interface ProviderConfig {
     vision: string;
   };
   lmstudio?: {
+    status: "ok" | "unreachable";
+    models_loaded: number;
+  };
+  openai?: {
+    base_url: string;
     status: "ok" | "unreachable";
     models_loaded: number;
   };
