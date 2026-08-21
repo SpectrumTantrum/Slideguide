@@ -9,6 +9,7 @@ GET  /api/session/{id}/history — Get message history
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -22,6 +23,14 @@ from backend.db.repositories.messages import MessageRepository
 from backend.db.repositories.progress import ProgressRepository
 from backend.db.repositories.sessions import SessionRepository
 from backend.db.repositories.uploads import UploadRepository
+from backend.llm.cursor import cancel_active_runs
+from backend.llm.runtime import (
+    bind_chat_sdk,
+    default_provider,
+    reset_chat_sdk,
+    resolve_provider,
+    session_chat_sdk,
+)
 from backend.memory.session_memory import SessionMemory
 from backend.memory.student_progress import StudentProgressTracker
 from backend.models.schemas import (
@@ -74,8 +83,16 @@ async def create_session(request: Request, body: CreateSessionRequest):
             detail=f"Upload not ready: {upload['status']}",
         )
 
-    # Create session in database
-    session = session_repo.create(upload_id=body.upload_id, phase="GREETING")
+    try:
+        chat_sdk = resolve_provider(body.provider)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    session = session_repo.create(
+        upload_id=body.upload_id,
+        phase="GREETING",
+        metadata={"chat_sdk": chat_sdk},
+    )
 
     # Create initial progress record
     progress_tracker = StudentProgressTracker(supabase)
@@ -83,10 +100,13 @@ async def create_session(request: Request, body: CreateSessionRequest):
 
     # Initialize graph state (LangGraph persists via checkpointer)
     graph = get_graph()
-    initial_state = create_initial_state(session["id"], body.upload_id)
+    initial_state = create_initial_state(
+        session["id"], body.upload_id, chat_sdk=chat_sdk
+    )
 
     # Run initial greeting turn
     config = {"configurable": {"thread_id": session["id"]}}
+    token = bind_chat_sdk(chat_sdk, session["id"])
     try:
         result = await graph.ainvoke(initial_state, config)
 
@@ -115,11 +135,14 @@ async def create_session(request: Request, body: CreateSessionRequest):
             "Welcome to SlideGuide! I'm ready to help you study. "
             "What topic would you like to start with?"
         )
+    finally:
+        reset_chat_sdk(token)
 
     logger.info(
         "session_created",
         session_id=session["id"],
         upload_id=body.upload_id,
+        chat_sdk=chat_sdk,
     )
 
     return SessionState(
@@ -127,6 +150,7 @@ async def create_session(request: Request, body: CreateSessionRequest):
         upload_id=body.upload_id,
         phase="greeting",
         message_count=1 if greeting else 0,
+        chat_sdk=chat_sdk,
     )
 
 
@@ -154,6 +178,17 @@ async def send_message(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
+    stored = session_chat_sdk(session)
+    try:
+        sdk = resolve_provider(body.provider) if body.provider else resolve_provider(stored)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if body.provider and stored != sdk:
+        meta = dict(session.get("metadata") or {})
+        meta["chat_sdk"] = sdk
+        session_repo.update(session_id, metadata=meta)
+
     # Persist student message
     msg_repo.create(
         session_id=session_id,
@@ -165,12 +200,15 @@ async def send_message(
         "message_received",
         session_id=session_id,
         content_length=len(body.content),
+        chat_sdk=sdk,
     )
 
     async def event_generator():
         """Generate SSE events from the agent's response."""
         graph = get_graph()
         config = {"configurable": {"thread_id": session_id}}
+        token = bind_chat_sdk(sdk, session_id)
+        invoke_task: asyncio.Task[Any] | None = None
 
         try:
             # Send stream start
@@ -179,9 +217,18 @@ async def send_message(
             # Invoke the graph with the new message
             input_state = {
                 "messages": [HumanMessage(content=body.content)],
+                "chat_sdk": sdk,
             }
 
-            result = await graph.ainvoke(input_state, config)
+            invoke_task = asyncio.create_task(graph.ainvoke(input_state, config))
+            while not invoke_task.done():
+                if await request.is_disconnected():
+                    invoke_task.cancel()
+                    cancel_active_runs()
+                    logger.info("sse_client_disconnected", session_id=session_id)
+                    return
+                await asyncio.wait({invoke_task}, timeout=0.2)
+            result = await invoke_task
 
             # Extract the AI response from the result
             ai_content = ""
@@ -249,6 +296,9 @@ async def send_message(
             for topic in topics:
                 progress_tracker.update_topic_covered(session_id, topic)
 
+        except asyncio.CancelledError:
+            cancel_active_runs()
+            raise
         except Exception as e:
             logger.error(
                 "message_processing_failed",
@@ -256,6 +306,11 @@ async def send_message(
                 error=str(e),
             )
             yield _sse_event("error", {"message": f"Processing error: {str(e)}"})
+        finally:
+            if invoke_task is not None and not invoke_task.done():
+                invoke_task.cancel()
+                cancel_active_runs()
+            reset_chat_sdk(token)
 
     return EventSourceResponse(event_generator())
 
@@ -303,6 +358,7 @@ async def get_session(request: Request, session_id: str):
         topics_covered=topics_covered,
         quiz_score=quiz_score,
         message_count=message_count,
+        chat_sdk=session_chat_sdk(session) or default_provider(),
     )
 
 

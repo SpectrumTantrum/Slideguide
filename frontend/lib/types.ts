@@ -22,6 +22,8 @@ export interface SlidesResponse {
   slides: SlideContent[];
 }
 
+export type ProviderId = "openai" | "cursor";
+
 export interface SessionState {
   session_id: string;
   upload_id: string;
@@ -30,6 +32,7 @@ export interface SessionState {
   topics_covered: string[];
   quiz_score: Record<string, number>;
   message_count: number;
+  chat_sdk?: ProviderId;
 }
 
 export interface ChatMessage {
@@ -68,8 +71,6 @@ export interface QuizScore {
   confidence?: number;
 }
 
-export type ProviderId = "openai" | "cursor";
-
 export interface AvailableProvider {
   id: ProviderId;
   label: string;
@@ -84,8 +85,15 @@ export interface ProviderConfig {
   sdk: string;
   usage: string;
   label: string;
+  scope?: "session" | "process_default";
+  session_id?: string | null;
   base_url: string;
   runtime?: string | null;
+  cursor?: {
+    runtime?: string;
+    local_tools_disabled?: boolean;
+    cloud_loads_team_tools?: boolean;
+  };
   endpoint: {
     status: "ok" | "unreachable" | "unconfigured";
     models_loaded: number;

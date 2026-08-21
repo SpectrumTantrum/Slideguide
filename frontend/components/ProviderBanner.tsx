@@ -30,6 +30,8 @@ export default function ProviderBanner() {
     warnings.push("Tool use: prompt-based");
   if (provider.capabilities.tool_mode === "none")
     warnings.push("Tool use unavailable");
+  if (provider.cursor?.cloud_loads_team_tools)
+    warnings.push("Cloud runtime still loads team MCP/hooks");
 
   const isCursor = provider.provider === "cursor";
   const isUnreachable = provider.endpoint?.status === "unreachable";
@@ -78,7 +80,9 @@ export default function ProviderBanner() {
             {isCursor
               ? `Cursor SDK · ${provider.models.primary || "grok-4.6"}${
                   provider.models.effort ? ` (${provider.models.effort})` : ""
-                } · ${usageLabel}`
+                } · ${usageLabel}${
+                  provider.scope === "session" ? " · this session" : ""
+                }`
               : usageLabel}
           </span>
           {provider.endpoint && provider.endpoint.models_loaded > 0 && (

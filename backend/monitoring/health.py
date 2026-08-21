@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter
 
 from backend.config import settings
-from backend.llm.runtime import get_active_provider
+from backend.llm.runtime import default_provider, models_for
 from backend.monitoring.metrics import metrics
 
 router = APIRouter(tags=["monitoring"])
@@ -34,10 +34,10 @@ def _check_supabase() -> str:
 
 
 async def _check_endpoint() -> dict:
-    """Check the active chat provider SDK and the embeddings endpoint."""
-    from backend.llm.discovery import check_active_provider_health, check_endpoint_health
+    """Check the process-default chat SDK and the embeddings endpoint."""
+    from backend.llm.discovery import check_chat_health, check_endpoint_health
 
-    chat = await check_active_provider_health()
+    chat = await check_chat_health(default_provider())
     embeddings = await check_endpoint_health(settings.openai_base_url)
     return {"chat": chat, "embeddings": embeddings}
 
@@ -50,17 +50,17 @@ async def health_check() -> dict:
     }
 
     endpoint_health = await _check_endpoint()
-    checks["chat_provider"] = get_active_provider()
+    checks["chat_sdk_default"] = default_provider()
     checks["llm_endpoint"] = endpoint_health["chat"]["status"]
     checks["llm_endpoint_models"] = endpoint_health["chat"]["models_loaded"]
     checks["embeddings_endpoint"] = endpoint_health["embeddings"]["status"]
 
     all_ok = all(
         v == "ok" for k, v in checks.items()
-        if isinstance(v, str) and k not in {"llm_endpoint_models", "chat_provider"}
+        if isinstance(v, str) and k not in {"llm_endpoint_models", "chat_sdk_default"}
     )
-    # Supabase and the active chat SDK are required. Embeddings may be down
-    # independently when chat is billed to Cursor.
+    # Supabase and the process-default chat SDK are required. Embeddings may
+    # be down independently when a session bills chat to Cursor.
     critical_ok = checks["supabase"] == "ok" and checks.get("llm_endpoint") == "ok"
 
     if all_ok:
@@ -121,10 +121,10 @@ async def get_metrics() -> dict:
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "endpoint": {
-            "provider": get_active_provider(),
+            "process_default_chat_sdk": default_provider(),
             "base_url": settings.openai_base_url,
-            "primary_model": settings.active_primary_model,
-            "embedding_model": settings.active_embedding_model,
+            "primary_model": models_for(default_provider()).primary,
+            "embedding_model": settings.embedding_model,
         },
         **summary,
         "models": model_stats,
