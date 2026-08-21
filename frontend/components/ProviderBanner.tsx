@@ -76,7 +76,9 @@ export default function ProviderBanner() {
           )}
           <span className="text-gray-600 dark:text-gray-300">
             {isCursor
-              ? `Cursor SDK · ${provider.models.primary || "composer-2.5"} · ${usageLabel}`
+              ? `Cursor SDK · ${provider.models.primary || "grok-4.6"}${
+                  provider.models.effort ? ` (${provider.models.effort})` : ""
+                } · ${usageLabel}`
               : usageLabel}
           </span>
           {provider.endpoint && provider.endpoint.models_loaded > 0 && (

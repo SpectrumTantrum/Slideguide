@@ -6,7 +6,7 @@ to the user's Cursor subscription (dashboard usage, SDK tag). The Cursor
 agent is run text-only (``tools=[]``) against an isolated workspace so it
 cannot edit the SlideGuide repo.
 
-Cursor's own models (Composer, Router) are preferred first on this route.
+Grok 4.6 at high reasoning effort is the default on this route.
 """
 
 from __future__ import annotations
@@ -26,7 +26,9 @@ from backend.llm.base import (
     stream_delta_chunk,
 )
 from backend.llm.models import (
+    CURSOR_DEFAULT_MODEL,
     CURSOR_PREFERRED_MODELS,
+    cursor_model_request,
     is_cursor_owned_model,
     prefer_cursor_models,
 )
@@ -153,7 +155,7 @@ class CursorChatProvider:
             )
 
         kwargs: dict[str, Any] = {
-            "model": model or CURSOR_PREFERRED_MODELS[0],
+            "model": _sdk_model(model),
             "api_key": api_key,
             "tools": [],
         }
@@ -213,6 +215,21 @@ class CursorChatProvider:
         return _fallback_catalog()
 
 
+def _sdk_model(model: str) -> Any:
+    """Turn a model id into a Cursor ``ModelSelection`` (Grok high effort)."""
+    from cursor_sdk import ModelParameterValue, ModelSelection
+
+    request = cursor_model_request(model or CURSOR_DEFAULT_MODEL)
+    if not request.params:
+        return request.id
+    return ModelSelection(
+        id=request.id,
+        params=[
+            ModelParameterValue(id=pid, value=value) for pid, value in request.params
+        ],
+    )
+
+
 def _workspace_dir() -> str:
     if settings.cursor_workspace.strip():
         path = Path(settings.cursor_workspace).expanduser()
@@ -225,6 +242,7 @@ def _workspace_dir() -> str:
 def _fallback_catalog() -> list[dict[str, Any]]:
     """Static catalog used when the live Cursor model list is unavailable."""
     labels = {
+        "grok-4.6": "Grok 4.6",
         "composer-2.5": "Composer 2.5",
         "composer-2": "Composer 2",
         "auto-smart": "Cursor Router",

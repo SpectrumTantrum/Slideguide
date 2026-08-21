@@ -82,7 +82,7 @@ Three migrations: initial schema, pgvector chunks, and storage bucket setup. Loc
 
 ## Key Patterns
 
-- **Provider SDKs**: `LLM_PROVIDER=openai|cursor` selects which SDK bills chat. Cursor requires `CURSOR_API_KEY` and prefers Composer (`composer-2.5`, then `composer-2`, then `auto-smart`) before any third-party model. `POST /api/settings/provider` switches the in-process SDK. Embeddings always use `OPENAI_BASE_URL` + `EMBEDDING_MODEL` (1536-d). Empty OpenAI API keys get a placeholder so keyless local endpoints work.
+- **Provider SDKs**: `LLM_PROVIDER=openai|cursor` selects which SDK bills chat. Cursor requires `CURSOR_API_KEY` and prefers `grok-4.6` at `CURSOR_REASONING_EFFORT=high`, then Composer, then Router. `POST /api/settings/provider` switches the in-process SDK. Embeddings always use `OPENAI_BASE_URL` + `EMBEDDING_MODEL` (1536-d). Empty OpenAI API keys get a placeholder so keyless local endpoints work.
 - **SSE events**: Chat streaming emits `token`, `phase_change`, `error`, `done` event types.
 - **Agent state** (`TutorState`): Append-only messages, phase tracking, student profile (confidence, consecutive correct/incorrect), teaching preferences (explanation mode, pacing level).
 - **Shared instances**: `vectorstore`, `ingestion_pipeline`, `retriever` are module-level singletons in `main.py`, initialized at import time.

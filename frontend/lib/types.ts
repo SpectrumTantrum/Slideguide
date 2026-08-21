@@ -103,6 +103,7 @@ export interface ProviderConfig {
     routing: string;
     embedding: string;
     vision: string;
+    effort?: string | null;
   };
   available_providers: AvailableProvider[];
 }

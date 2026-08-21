@@ -12,8 +12,10 @@ from backend.llm.base import (
     message_text,
 )
 from backend.llm.models import (
+    CURSOR_DEFAULT_MODEL,
     CURSOR_PREFERRED_MODELS,
     cursor_model_chain,
+    cursor_model_request,
     get_fallback_chain,
     is_cursor_owned_model,
     prefer_cursor_models,
@@ -37,36 +39,49 @@ def _reset_provider():
 class TestCursorModelPreference:
     def test_composer_is_cursor_owned(self):
         assert is_cursor_owned_model("composer-2.5") is True
+        assert is_cursor_owned_model("grok-4.6") is True
         assert is_cursor_owned_model("auto-smart") is True
         assert is_cursor_owned_model("gpt-4o-mini") is False
 
-    def test_chain_starts_with_composer(self):
+    def test_chain_starts_with_grok(self):
         chain = cursor_model_chain()
-        assert chain[0] == "composer-2.5"
-        assert chain[:3] == list(CURSOR_PREFERRED_MODELS)
+        assert chain[0] == "grok-4.6"
+        assert chain[:4] == list(CURSOR_PREFERRED_MODELS)
 
     def test_explicit_cursor_model_stays_first(self):
         chain = cursor_model_chain("auto-smart")
         assert chain[0] == "auto-smart"
-        assert "composer-2.5" in chain
+        assert "grok-4.6" in chain
 
     def test_third_party_primary_is_appended(self):
         chain = cursor_model_chain("gpt-5.5")
-        assert chain[0] == "composer-2.5"
+        assert chain[0] == "grok-4.6"
         assert chain[-1] == "gpt-5.5"
 
     def test_catalog_sorts_cursor_first(self):
-        ordered = prefer_cursor_models(["gpt-5.5", "auto-smart", "composer-2.5", "claude-4"])
-        assert ordered[:2] == ["composer-2.5", "auto-smart"]
+        ordered = prefer_cursor_models(
+            ["gpt-5.5", "auto-smart", "composer-2.5", "grok-4.6", "claude-4"]
+        )
+        assert ordered[:3] == ["grok-4.6", "composer-2.5", "auto-smart"]
         assert ordered[-2:] == ["gpt-5.5", "claude-4"]
 
     def test_fallback_chain_openai_is_primary(self):
         assert get_fallback_chain("openai") == [settings.primary_model]
 
-    def test_fallback_chain_cursor_prefers_composer(self):
+    def test_fallback_chain_cursor_prefers_grok(self):
         chain = get_fallback_chain("cursor")
-        assert chain[0] == "composer-2.5"
-        assert "auto-smart" in chain
+        assert chain[0] == "grok-4.6"
+        assert "composer-2.5" in chain
+
+    def test_grok_defaults_to_high_effort(self):
+        request = cursor_model_request()
+        assert request.id == CURSOR_DEFAULT_MODEL
+        assert request.params == (("reasoning_effort", "high"),)
+
+    def test_composer_has_no_grok_effort_param(self):
+        request = cursor_model_request("composer-2.5")
+        assert request.id == "composer-2.5"
+        assert request.params == ()
 
 
 class TestRuntimeSwitch:
@@ -78,14 +93,14 @@ class TestRuntimeSwitch:
         with pytest.raises(ValueError, match="CURSOR_API_KEY"):
             set_active_provider("cursor")
 
-    def test_switch_to_cursor_prefers_composer(self, monkeypatch):
+    def test_switch_to_cursor_prefers_grok_high(self, monkeypatch):
         monkeypatch.setattr(settings, "cursor_api_key", "crsr_test")
         monkeypatch.setattr(settings, "primary_model", "gpt-4o-mini")
         monkeypatch.setattr(settings, "cursor_model", "")
         set_active_provider("cursor")
         assert get_active_provider() == "cursor"
-        assert settings.active_primary_model == "composer-2.5"
-        assert get_fallback_chain()[0] == "composer-2.5"
+        assert settings.active_primary_model == "grok-4.6"
+        assert get_fallback_chain()[0] == "grok-4.6"
         assert "gpt-4o-mini" in get_fallback_chain()
 
     def test_unknown_provider_rejected(self):
@@ -171,7 +186,7 @@ class TestCursorChatProvider:
             status = "finished"
             result = "Photosynthesis converts light to chemical energy."
             id = "run-1"
-            model = type("M", (), {"id": "composer-2.5"})()
+            model = type("M", (), {"id": "grok-4.6"})()
             usage = FakeUsage()
 
         class FakeRun:
@@ -197,7 +212,14 @@ class TestCursorChatProvider:
         class FakeAgentType:
             @staticmethod
             def create(options):
-                assert options.model == "composer-2.5"
+                model = options.model
+                model_id = model if isinstance(model, str) else model.id
+                assert model_id == "grok-4.6"
+                if isinstance(model, str):
+                    params: tuple[tuple[str, str], ...] = ()
+                else:
+                    params = tuple((p.id, p.value) for p in model.params)
+                assert params == (("reasoning_effort", "high"),)
                 assert options.tools == []
                 return FakeAgent()
 
@@ -209,7 +231,7 @@ class TestCursorChatProvider:
         provider = CursorChatProvider()
         response = await provider.chat(
             messages=[{"role": "user", "content": "Explain photosynthesis"}],
-            model="composer-2.5",
+            model="grok-4.6",
         )
         assert response["choices"][0]["message"]["content"].startswith("Photosynthesis")
         assert response["usage"]["prompt_tokens"] == 10

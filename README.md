@@ -151,16 +151,17 @@ Set `LLM_PROVIDER=cursor` and a `CURSOR_API_KEY` from
 vision then run through the official [`cursor-sdk`](https://cursor.com/docs/sdk/python)
 and appear on your Cursor usage dashboard under the SDK tag.
 
-On this route SlideGuide **always prefers Cursor models first**: `composer-2.5`,
-then `composer-2`, then Cursor Router (`auto-smart`). Override with `CURSOR_MODEL`
-if you want a different Cursor-owned id first. You can also switch SDKs from the
-session banner once the key is configured.
+On this route SlideGuide **prefers Grok 4.6 at high effort first** (Cursor's
+first-party general model), then Composer, then Cursor Router (`auto-smart`).
+Override with `CURSOR_MODEL` / `CURSOR_REASONING_EFFORT`. You can also switch
+SDKs from the session banner once the key is configured.
 
 ```bash
 LLM_PROVIDER=cursor
 CURSOR_API_KEY=crsr_...
 CURSOR_RUNTIME=local          # local (default) or cloud
-CURSOR_MODEL=                 # optional; defaults to composer-2.5
+CURSOR_MODEL=                 # optional; defaults to grok-4.6
+CURSOR_REASONING_EFFORT=high  # low | medium | high | xhigh
 ```
 
 Local agents run text-only (`tools=[]`) in an isolated workspace so the Cursor

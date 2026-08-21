@@ -71,6 +71,7 @@ async def get_provider_status() -> dict[str, Any]:
             "routing": settings.active_routing_model,
             "embedding": settings.active_embedding_model,
             "vision": settings.active_vision_model,
+            "effort": settings.cursor_reasoning_effort if provider == "cursor" else None,
         },
         "available_providers": available_providers(),
     }

@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_CURSOR_DEFAULT_MODEL = "composer-2.5"
+_CURSOR_DEFAULT_MODEL = "grok-4.6"
 
 
 class Settings(BaseSettings):
@@ -45,7 +45,8 @@ class Settings(BaseSettings):
     # Cursor SDK (https://cursor.com/docs/sdk/python). Chat billed to CURSOR_API_KEY.
     cursor_api_key: str = ""
     cursor_runtime: Literal["local", "cloud"] = "local"
-    cursor_model: str = ""  # optional; defaults to Composer 2.5
+    cursor_model: str = ""  # optional; defaults to grok-4.6
+    cursor_reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "high"
     cursor_workspace: str = ""  # optional isolated cwd for local agents
 
     # Supabase
@@ -66,7 +67,7 @@ class Settings(BaseSettings):
     max_tokens_per_session: int = 100_000
     max_upload_size_mb: int = 50
 
-    @field_validator("llm_provider", "cursor_runtime", mode="before")
+    @field_validator("llm_provider", "cursor_runtime", "cursor_reasoning_effort", mode="before")
     @classmethod
     def _lowercase_choice(cls, value: object) -> object:
         if isinstance(value, str):
