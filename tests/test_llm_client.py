@@ -4,7 +4,8 @@ import pytest
 
 from backend.config import settings
 from backend.llm.models import get_fallback_chain
-from backend.monitoring.metrics import MetricsCollector, estimate_cost as metrics_estimate
+from backend.monitoring.metrics import MetricsCollector
+from backend.monitoring.metrics import estimate_cost as metrics_estimate
 
 
 class TestModelSelection:
