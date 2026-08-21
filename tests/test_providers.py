@@ -213,3 +213,99 @@ class TestCursorChatProvider:
         )
         assert response["choices"][0]["message"]["content"].startswith("Photosynthesis")
         assert response["usage"]["prompt_tokens"] == 10
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_yields_deltas(self, monkeypatch):
+        from backend.llm.cursor_provider import CursorChatProvider
+
+        class FakeResult:
+            status = "finished"
+            result = "hello world"
+            id = "run-2"
+            model = type("M", (), {"id": "composer-2.5"})()
+            usage = None
+
+        class FakeRun:
+            def wait(self):
+                return FakeResult()
+
+            def iter_text(self):
+                yield "hello "
+                yield "world"
+
+        class FakeAgent:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def send(self, message):
+                return FakeRun()
+
+        class FakeAgentType:
+            @staticmethod
+            def create(options):
+                return FakeAgent()
+
+        monkeypatch.setattr(settings, "cursor_api_key", "crsr_test")
+        import cursor_sdk
+
+        monkeypatch.setattr(cursor_sdk, "Agent", FakeAgentType)
+
+        provider = CursorChatProvider()
+        texts: list[str] = []
+        finish = None
+        async for chunk in provider.stream_chat(
+            messages=[{"role": "user", "content": "Hi"}],
+            model="composer-2.5",
+        ):
+            delta = chunk["choices"][0]["delta"]["content"]
+            if delta:
+                texts.append(delta)
+            finish = chunk["choices"][0]["finish_reason"]
+        assert "".join(texts) == "hello world"
+        assert finish == "stop"
+
+
+class TestSettingsRoutes:
+    def test_switch_to_cursor_without_key_is_400(self, monkeypatch):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from backend.routes.settings import router
+
+        monkeypatch.setattr(settings, "cursor_api_key", "")
+        app = FastAPI()
+        app.include_router(router)
+        response = TestClient(app).post("/api/settings/provider", json={"provider": "cursor"})
+        assert response.status_code == 400
+        assert "CURSOR_API_KEY" in response.json()["detail"]
+
+    def test_get_provider_includes_available_sdks(self, monkeypatch):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from backend.routes.settings import router
+
+        async def fake_chat_health():
+            return {"status": "ok", "models_loaded": 3}
+
+        async def fake_embed_health(_url: str):
+            return {"status": "ok", "models_loaded": 1}
+
+        monkeypatch.setattr(
+            "backend.routes.settings.check_active_provider_health", fake_chat_health
+        )
+        monkeypatch.setattr(
+            "backend.routes.settings.check_endpoint_health", fake_embed_health
+        )
+
+        app = FastAPI()
+        app.include_router(router)
+        response = TestClient(app).get("/api/settings/provider")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["provider"] == "openai"
+        assert body["sdk"] == "openai"
+        assert {row["id"] for row in body["available_providers"]} == {"cursor", "openai"}
