@@ -22,8 +22,9 @@ graph TB
         Memory[Memory System]
     end
 
-    subgraph LLM["OpenAI-compatible endpoint (your choice)"]
-        Endpoint[Chat + Embeddings API]
+    subgraph LLM["Provider SDKs (pick a subscription)"]
+        CursorSDK[Cursor SDK / Cursor usage]
+        Endpoint[OpenAI SDK / OpenAI-compatible endpoint]
     end
 
     subgraph Supabase["Supabase"]
@@ -39,6 +40,7 @@ graph TB
     Agent -->|State Persistence| Memory
     RAG -->|Vector search| Postgres
     RAG -->|Embeddings| Endpoint
+    Agent -->|Chat| CursorSDK
     Agent -->|Chat| Endpoint
     Memory --> Postgres
     Parsers -->|File storage| Storage
@@ -51,7 +53,7 @@ graph TB
 | Frontend | Next.js 14, TypeScript, Tailwind CSS, Zustand | UI and state management |
 | Backend | FastAPI, Python 3.11+ | API server |
 | Agent | LangGraph | Multi-node stateful tutoring agent |
-| LLM | Any OpenAI-compatible endpoint (OpenAI, Ollama, vLLM, LocalAI, OpenRouter, LM Studio, …) | Reasoning and generation |
+| LLM | Cursor SDK (`cursor-sdk`) or any OpenAI-compatible endpoint | Reasoning and generation (Cursor usage or endpoint bill) |
 | Embeddings | Any OpenAI-compatible embeddings endpoint (1536-d) | Semantic search vectors |
 | Database | Supabase (PostgreSQL + pgvector) | Vector search, sessions, progress, cost tracking |
 | Storage | Supabase Storage | Uploaded file persistence |
@@ -68,6 +70,7 @@ graph TB
 - **SSE streaming**: Real-time token-by-token response streaming
 - **Circuit breaker**: Retries with backoff and opens on repeated endpoint failures
 - **Bring-your-own endpoint**: Point at any OpenAI-compatible API — cloud or fully offline/keyless (Ollama, vLLM, LocalAI, …)
+- **Cursor subscription**: Set `LLM_PROVIDER=cursor` as the process default, or pick Cursor in the session banner (that session only) to bill tutoring chat to Cursor usage via the official Python SDK. Grok 4.6 at high effort is preferred first.
 
 ## Setup
 
@@ -77,7 +80,7 @@ graph TB
 - Node.js 18+
 - [Docker](https://docs.docker.com/get-docker/) (required by Supabase CLI)
 - [Supabase CLI](https://supabase.com/docs/guides/cli) (or a hosted Supabase project)
-- An OpenAI-compatible endpoint for chat + embeddings (see [Choosing your LLM endpoint](#choosing-your-llm-endpoint-openai-compatible)) — this can be a hosted API or a fully local, keyless server
+- A chat provider: a [Cursor API key](https://cursor.com/dashboard/api) and/or an OpenAI-compatible endpoint for chat + embeddings (see [Choosing your LLM](#choosing-your-llm-provider-sdk))
 - [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) (optional — only needed for OCR on image-heavy slides)
 
 ### 1. Clone and configure
@@ -133,13 +136,58 @@ Visit `http://localhost:3000` to start using SlideGuide.
 
 ```bash
 pytest tests/ -v
+
+# Cursor SDK e2e (live tests also need SLIDEGUIDE_LIVE_CURSOR=1)
+pytest tests/e2e -v
+# Live only:
+# SLIDEGUIDE_LIVE_CURSOR=1 pytest tests/e2e -m live -v
 ```
 
-## Choosing your LLM endpoint (OpenAI-compatible)
+## Choosing your LLM (provider SDK)
 
-SlideGuide talks to a single OpenAI-compatible `/v1` API that **you choose** for
-chat, embeddings, and (optionally) vision. It can be a hosted service or a fully
-local, keyless server:
+SlideGuide can bill tutoring chat to different subscriptions by swapping the
+provider SDK. Embeddings always use an OpenAI-compatible endpoint (Cursor has
+no embedding API).
+
+### Cursor SDK (Cursor usage)
+
+Set `LLM_PROVIDER=cursor` and a `CURSOR_API_KEY` from
+[Cursor Dashboard → API Keys](https://cursor.com/dashboard/api). Chat and
+vision then run through the official [`cursor-sdk`](https://cursor.com/docs/sdk/python)
+and appear on your Cursor usage dashboard under the SDK tag.
+
+On this route SlideGuide **prefers Grok 4.6 at high effort first** (Cursor's
+first-party general model), then Composer 2.5 / Composer 2. `auto-smart` is
+listed in the catalog but is not in the automatic fallback chain. Override with
+`CURSOR_MODEL` / `CURSOR_REASONING_EFFORT`. `ROUTING_MODEL` / `VISION_MODEL` /
+`PRIMARY_MODEL` are ignored on this route unless they are Cursor-owned ids.
+Cheap JSON nodes (router, quiz scoring) stay on Composer, not Grok-high.
+
+`LLM_PROVIDER` is the process default for new sessions. The session banner
+stores a tab preference in `localStorage` and applies it on create / switch
+for **that session only** (`sessions.metadata.chat_sdk`).
+`POST /api/settings/provider` requires `session_id` and never flips a
+process-wide cell.
+
+```bash
+LLM_PROVIDER=cursor
+CURSOR_API_KEY=crsr_...
+CURSOR_RUNTIME=local          # tutoring requires local (cloud refused)
+CURSOR_MODEL=                 # optional; defaults to grok-4.6
+CURSOR_REASONING_EFFORT=high  # low | medium | high | xhigh
+CURSOR_WORKSPACE=             # optional root; each session gets its own subdir
+```
+
+Local agents run text-only (`tools=[]`, empty `mcp_servers`) in a **per-session**
+workspace under `CURSOR_WORKSPACE` or `/tmp/slideguide-cursor/<session_id>`.
+`CURSOR_RUNTIME=cloud` is refused for tutoring — team MCP/hooks cannot be
+blocked there. SSE disconnect cancels the in-flight Cursor run.
+
+### OpenAI-compatible endpoint
+
+When `LLM_PROVIDER=openai`, SlideGuide talks to a single OpenAI-compatible
+`/v1` API that **you choose** for chat, embeddings, and (optionally) vision.
+It can be a hosted service or a fully local, keyless server:
 
 - **OpenAI** — `https://api.openai.com/v1`
 - **OpenRouter** — `https://openrouter.ai/api/v1`
@@ -167,7 +215,7 @@ VISION_MODEL=                                # optional; leave empty to disable 
 - **No key required**: if `OPENAI_API_KEY` is empty, a harmless placeholder is sent so the OpenAI SDK still initializes — keyless local endpoints work out of the box.
 - **Tool compatibility**: starts with native OpenAI-format tool calling; if the model fails to produce valid tool calls 3 times in a row, it switches to a prompt-based fallback that injects tool schemas into the system prompt.
 - **Cost tracking**: recognized model IDs are priced; unknown/local models are tracked at $0.00.
-- **Health + models**: `GET /api/settings/provider` reports the endpoint and its reachability; `GET /api/settings/models` lists models discovered from `OPENAI_BASE_URL`.
+- **Health + models**: `GET /api/settings/provider` reports the process default (or `?session_id=` / `?provider=` preview). `POST /api/settings/provider` requires `{ provider, session_id }` and only changes that session. `GET /api/settings/models` lists models (Cursor-owned first on the Cursor route).
 
 ### Verifying the connection
 
@@ -180,6 +228,8 @@ You should see:
 ```json
 {
   "provider": "openai",
+  "sdk": "openai",
+  "usage": "openai_compatible_endpoint",
   "base_url": "http://localhost:11434/v1",
   "endpoint": { "status": "ok", "models_loaded": 2 },
   "models": { "primary": "llama3.1:8b", "embedding": "text-embedding-3-small", "routing": "llama3.1:8b", "vision": "" }
@@ -208,10 +258,12 @@ slideguide/
 │   │       ├── storage.py   # Supabase Storage operations
 │   │       └── uploads.py   # Upload metadata CRUD
 │   ├── llm/            # LLM clients
-│   │   ├── client.py   # OpenAI-compatible client with retry + circuit breaker
-│   │   ├── discovery.py # Endpoint model discovery (/v1/models)
-│   │   ├── models.py   # Model configs and pricing
-│   │   ├── providers.py # Provider config resolution (cloud vs local)
+│   │   ├── client.py   # OpenAI HTTP + retry + per-SDK circuit breakers
+│   │   ├── cursor.py   # cursor-sdk translator (Cursor subscription)
+│   │   ├── discovery.py # Model discovery (argument is the chat SDK)
+│   │   ├── models.py   # Cursor teaching/routing fallback chains
+│   │   ├── providers.py # Catalog + embedding HTTP config
+│   │   ├── runtime.py  # Session/request chat-SDK selection
 │   │   ├── streaming.py # SSE stream handler
 │   │   ├── tool_compatibility.py # Native ↔ prompt-based tool use adapter
 │   │   └── vision.py   # VLM image understanding
@@ -256,8 +308,8 @@ slideguide/
 |-------|---------------|
 | **RAG Pipeline** | Hybrid search (semantic + PostgreSQL full-text), Reciprocal Rank Fusion, MMR diversity ranking |
 | **Agentic AI** | LangGraph multi-node graph with conditional routing, tool calling, state persistence |
-| **LLM Engineering** | Retry with exponential backoff, circuit breaker, cost tracking, pluggable OpenAI-compatible endpoint (cloud or local/keyless) |
-| **Provider Abstraction** | Single OpenAI-compatible client (any endpoint), model discovery, adaptive tool-calling compatibility layer |
+| **LLM Engineering** | Retry with exponential backoff, per-SDK circuit breakers, cost tracking, Cursor translator + OpenAI HTTP |
+| **Chat SDK selection** | `LLM_PROVIDER` process default; per-session override; Cursor-first model preference; model discovery; adaptive tool-calling |
 | **Prompt Engineering** | 5 explanation modes, adaptive quiz difficulty, neurodivergent-friendly formatting |
 | **Document Processing** | PDF (PyMuPDF) + PPTX parsing, OCR with VLM fallback, slide-aware chunking |
 | **Multimodal** | VLM image descriptions for charts/diagrams, base64 encoding, context injection |
@@ -277,8 +329,9 @@ slideguide/
 | `GET` | `/api/session/{session_id}` | Get session state |
 | `POST` | `/api/session/{session_id}/message` | Send a message (returns SSE stream) |
 | `GET` | `/api/session/{session_id}/history` | Get chat history for a session |
-| `GET` | `/api/settings/provider` | Get current provider configuration |
-| `GET` | `/api/settings/models` | List available models |
+| `GET` | `/api/settings/provider` | Catalog + process default, or `?session_id=` / `?provider=` |
+| `POST` | `/api/settings/provider` | Switch one session's chat SDK (`provider` + `session_id`) |
+| `GET` | `/api/settings/models` | List models for a session or `?provider=` preview |
 | `GET` | `/health/live` | Liveness check |
 | `GET` | `/health/ready` | Readiness check |
 

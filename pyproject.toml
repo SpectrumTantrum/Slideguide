@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "python-multipart>=0.0.12",
     "openai>=1.50.0",
+    "cursor-sdk>=1.0.24",
     "langgraph>=0.2.0",
     "langgraph-checkpoint-postgres>=2.0.0",
     "pymupdf>=1.24.0",
@@ -42,6 +43,10 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "e2e: process or live end-to-end tests",
+    "live: hits a real provider API (skipped without credentials)",
+]
 
 [tool.setuptools.packages.find]
 include = ["backend*"]

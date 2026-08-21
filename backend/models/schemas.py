@@ -116,18 +116,21 @@ class SessionState(BaseModel):
     topics_covered: list[str] = Field(default_factory=list)
     quiz_score: dict[str, Any] = Field(default_factory=dict)
     message_count: int = 0
+    chat_sdk: str = "openai"
 
 
 class CreateSessionRequest(BaseModel):
     """Request to create a new tutoring session."""
 
     upload_id: str
+    provider: Literal["openai", "cursor"] | None = None
 
 
 class SendMessageRequest(BaseModel):
     """Request to send a message in a session."""
 
     content: str
+    provider: Literal["openai", "cursor"] | None = None
 
 
 # ── Quiz ──────────────────────────────────────────────────────────────────────

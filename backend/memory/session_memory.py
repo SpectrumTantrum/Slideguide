@@ -13,7 +13,6 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from backend.config import settings
 from backend.llm.client import LLMClient
 from backend.monitoring.logger import get_logger
 
@@ -117,7 +116,7 @@ class SessionMemory:
                     {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
                     {"role": "user", "content": f"Summarize this tutoring conversation:\n\n{conversation_text}"},
                 ],
-                model=settings.active_routing_model,
+                purpose="route",
                 temperature=0.3,
                 max_tokens=500,
             )

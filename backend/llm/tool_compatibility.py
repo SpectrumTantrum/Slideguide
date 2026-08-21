@@ -104,16 +104,26 @@ class ToolCompatibilityLayer:
         self._mode: str = "native"  # "native" or "prompt"
 
     @property
+    def learned_mode(self) -> str:
+        """SDK-independent mode learned from native parse failures."""
+        return self._mode
+
+    @property
     def mode(self) -> str:
+        from backend.llm.runtime import current_chat_sdk, tool_mode_for
+
+        if current_chat_sdk() == "cursor":
+            return tool_mode_for("cursor")
         return self._mode
 
     def _should_use_prompt_mode(self) -> bool:
         """Check if we should use prompt-based tool injection.
 
-        Start with native OpenAI-format tool calling and only switch to
-        prompt-based injection after repeated native-tool parse failures.
+        Cursor's agent SDK has no OpenAI-format tools, so that route is
+        always prompt-based. Otherwise start native and switch after
+        repeated parse failures.
         """
-        return self._mode == "prompt"
+        return self.mode == "prompt"
 
     async def wrap_chat_call(
         self,
@@ -123,6 +133,7 @@ class ToolCompatibilityLayer:
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.7,
         max_tokens: int = 2048,
+        purpose: str = "chat",
     ) -> dict[str, Any]:
         """
         Call the LLM with tool use support, using native or prompt-based mode.
@@ -137,11 +148,12 @@ class ToolCompatibilityLayer:
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                purpose=purpose,
             )
 
         if self._should_use_prompt_mode():
             return await self._prompt_based_call(
-                llm, messages, model, tools, temperature, max_tokens,
+                llm, messages, model, tools, temperature, max_tokens, purpose,
             )
 
         # Try native tool use first
@@ -151,6 +163,7 @@ class ToolCompatibilityLayer:
             tools=tools,
             temperature=temperature,
             max_tokens=max_tokens,
+            purpose=purpose,
         )
 
         message = response.get("choices", [{}])[0].get("message", {})
@@ -175,7 +188,7 @@ class ToolCompatibilityLayer:
                     logger.info("tool_mode_switched", new_mode="prompt")
                 # Fall through to try prompt-based for this call
                 return await self._prompt_based_call(
-                    llm, messages, model, tools, temperature, max_tokens,
+                    llm, messages, model, tools, temperature, max_tokens, purpose,
                 )
 
         # No tool calls in response — model chose not to use tools
@@ -189,6 +202,7 @@ class ToolCompatibilityLayer:
         tools: list[dict[str, Any]],
         temperature: float,
         max_tokens: int,
+        purpose: str = "chat",
     ) -> dict[str, Any]:
         """Call LLM with tool schemas injected into the system prompt."""
         tool_prompt = _build_tool_prompt(tools)
@@ -218,6 +232,7 @@ class ToolCompatibilityLayer:
             model=model,
             temperature=temperature,
             max_tokens=max_tokens,
+            purpose=purpose,
         )
 
         # Parse tool calls from the text response

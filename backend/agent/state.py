@@ -56,8 +56,13 @@ class TutorState(TypedDict):
     error_count: int
     pending_tasks: list[str]  # For compound request decomposition
 
+    # Which chat SDK bills this session (openai | cursor)
+    chat_sdk: str
 
-def create_initial_state(session_id: str, upload_id: str) -> dict[str, Any]:
+
+def create_initial_state(
+    session_id: str, upload_id: str, chat_sdk: str = "openai"
+) -> dict[str, Any]:
     """Create the initial state for a new tutoring session."""
     return {
         "messages": [],
@@ -80,4 +85,5 @@ def create_initial_state(session_id: str, upload_id: str) -> dict[str, Any]:
         "encouragement_due": False,
         "error_count": 0,
         "pending_tasks": [],
+        "chat_sdk": chat_sdk,
     }

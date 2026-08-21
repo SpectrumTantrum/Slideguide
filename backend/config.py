@@ -7,6 +7,9 @@ Fails fast with clear error messages if required variables are missing.
 
 from __future__ import annotations
 
+from typing import Literal
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,18 +22,30 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
+    # Which chat SDK bills tutoring tokens. ``openai`` uses the OpenAI SDK
+    # against openai_base_url. ``cursor`` uses cursor-sdk and Cursor usage.
+    llm_provider: Literal["openai", "cursor"] = "openai"
+
     # OpenAI-compatible endpoint. Point openai_base_url at ANY OpenAI-compatible
     # /v1 API you choose — real OpenAI, Ollama, vLLM, LocalAI, OpenRouter,
     # LM Studio, Together, Groq, or a self-hosted gateway. The API key may be
     # left empty for endpoints that don't require auth (a placeholder is sent so
     # the OpenAI SDK still initializes). Model names are whatever your endpoint
     # serves. The embedding model must return 1536-d vectors (pgvector schema).
+    # Embeddings always use this endpoint, even when chat is billed to Cursor.
     openai_base_url: str = "https://api.openai.com/v1"
     openai_api_key: str = ""
     primary_model: str = ""
     routing_model: str = ""  # falls back to primary_model if empty
     embedding_model: str = ""
     vision_model: str = ""  # optional; leave empty to disable vision
+
+    # Cursor SDK (https://cursor.com/docs/sdk/python). Chat billed to CURSOR_API_KEY.
+    cursor_api_key: str = ""
+    cursor_runtime: Literal["local", "cloud"] = "local"  # cloud refused for tutoring
+    cursor_model: str = ""  # optional; defaults to grok-4.6
+    cursor_reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "high"
+    cursor_workspace: str = ""  # optional root; each session gets its own subdir
 
     # Supabase
     supabase_url: str = "http://127.0.0.1:54321"
@@ -50,8 +65,16 @@ class Settings(BaseSettings):
     max_tokens_per_session: int = 100_000
     max_upload_size_mb: int = 50
 
+    @field_validator("llm_provider", "cursor_runtime", "cursor_reasoning_effort", mode="before")
+    @classmethod
+    def _lowercase_choice(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
     @property
     def active_primary_model(self) -> str:
+        """Env ``PRIMARY_MODEL`` only. Session SDK choice lives in ``llm.runtime``."""
         return self.primary_model
 
     @property

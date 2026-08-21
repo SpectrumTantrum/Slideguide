@@ -72,10 +72,13 @@ export async function getSlides(uploadId: string): Promise<SlidesResponse> {
 
 // ── Session ─────────────────────────────────────────────────────────────────
 
-export async function createSession(uploadId: string): Promise<SessionState> {
+export async function createSession(
+  uploadId: string,
+  provider?: ProviderConfig["provider"]
+): Promise<SessionState> {
   return request("/session", {
     method: "POST",
-    body: JSON.stringify({ upload_id: uploadId }),
+    body: JSON.stringify({ upload_id: uploadId, provider }),
   });
 }
 
@@ -93,14 +96,38 @@ export async function getHistory(
 
 // ── Provider / Settings ─────────────────────────────────────────────────────
 
-export async function getProviderConfig(): Promise<ProviderConfig> {
-  return request("/settings/provider");
+export async function getProviderConfig(opts?: {
+  sessionId?: string;
+  provider?: ProviderConfig["provider"];
+}): Promise<ProviderConfig> {
+  const params = new URLSearchParams();
+  if (opts?.sessionId) params.set("session_id", opts.sessionId);
+  if (opts?.provider) params.set("provider", opts.provider);
+  const query = params.toString();
+  return request(`/settings/provider${query ? `?${query}` : ""}`);
 }
 
-export async function getAvailableModels(): Promise<ModelInfo[]> {
-  return request<{ models: ModelInfo[] }>("/settings/models").then(
-    (r) => r.models
-  );
+export async function switchProvider(
+  provider: ProviderConfig["provider"],
+  sessionId: string
+): Promise<ProviderConfig> {
+  return request("/settings/provider", {
+    method: "POST",
+    body: JSON.stringify({ provider, session_id: sessionId }),
+  });
+}
+
+export async function getAvailableModels(opts?: {
+  sessionId?: string;
+  provider?: ProviderConfig["provider"];
+}): Promise<ModelInfo[]> {
+  const params = new URLSearchParams();
+  if (opts?.sessionId) params.set("session_id", opts.sessionId);
+  if (opts?.provider) params.set("provider", opts.provider);
+  const query = params.toString();
+  return request<{ models: ModelInfo[] }>(
+    `/settings/models${query ? `?${query}` : ""}`
+  ).then((r) => r.models);
 }
 
 // ── SSE Streaming ───────────────────────────────────────────────────────────
@@ -110,14 +137,15 @@ export function streamMessage(
   content: string,
   onEvent: (event: string, data: Record<string, unknown>) => void,
   onDone: () => void,
-  onError: (error: Error) => void
+  onError: (error: Error) => void,
+  provider?: ProviderConfig["provider"]
 ): AbortController {
   const controller = new AbortController();
 
   fetch(`${BASE}/session/${sessionId}/message`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, provider }),
     signal: controller.signal,
   })
     .then(async (res) => {

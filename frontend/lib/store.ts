@@ -9,12 +9,26 @@ import { create } from "zustand";
 import type {
   ChatMessage,
   ProviderConfig,
+  ProviderId,
   QuizScore,
   SessionState,
   SlideContent,
   UploadResponse,
 } from "./types";
 import * as api from "./api";
+
+const PROVIDER_STORAGE_KEY = "slideguide-llm-provider";
+
+function readStoredProvider(): ProviderId | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(PROVIDER_STORAGE_KEY);
+  return raw === "openai" || raw === "cursor" ? raw : null;
+}
+
+function writeStoredProvider(provider: ProviderId): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(PROVIDER_STORAGE_KEY, provider);
+}
 
 interface SlideGuideStore {
   // Upload state
@@ -55,6 +69,7 @@ interface SlideGuideStore {
   loadHistory: () => Promise<void>;
   loadSlides: () => Promise<void>;
   loadProviderConfig: () => Promise<void>;
+  switchProvider: (provider: ProviderConfig["provider"]) => Promise<void>;
   setCurrentSlide: (slide: number) => void;
   setExplanationMode: (mode: string) => void;
   setPacing: (pacing: string) => void;
@@ -114,7 +129,7 @@ export const useStore = create<SlideGuideStore>((set, get) => ({
   startSession: async (uploadId: string) => {
     set({ isCreatingSession: true });
     try {
-      const session = await api.createSession(uploadId);
+      const session = await api.createSession(uploadId, readStoredProvider() ?? undefined);
       set({
         session,
         isCreatingSession: false,
@@ -126,6 +141,7 @@ export const useStore = create<SlideGuideStore>((set, get) => ({
       // Load message history (greeting should be there)
       await get().loadHistory();
       await get().loadSlides();
+      await get().loadProviderConfig();
     } catch (err) {
       set({ isCreatingSession: false });
       throw err;
@@ -203,7 +219,8 @@ export const useStore = create<SlideGuideStore>((set, get) => ({
           }
           return { messages: msgs, isStreaming: false, streamController: null };
         });
-      }
+      },
+      get().provider?.provider
     );
 
     set({ streamController: controller });
@@ -243,11 +260,29 @@ export const useStore = create<SlideGuideStore>((set, get) => ({
 
   loadProviderConfig: async () => {
     try {
-      const config = await api.getProviderConfig();
+      const sessionId = get().session?.session_id;
+      const stored = readStoredProvider();
+      const config = sessionId
+        ? await api.getProviderConfig({ sessionId })
+        : await api.getProviderConfig(stored ? { provider: stored } : undefined);
       set({ provider: config });
     } catch {
       // Silent fail — provider info is informational
     }
+  },
+
+  switchProvider: async (provider) => {
+    const sessionId = get().session?.session_id;
+    const config = sessionId
+      ? await api.switchProvider(provider, sessionId)
+      : await api.getProviderConfig({ provider });
+    writeStoredProvider(config.provider);
+    set({
+      provider: config,
+      session: get().session
+        ? { ...get().session!, chat_sdk: config.provider }
+        : get().session,
+    });
   },
 
   setCurrentSlide: (slide: number) => set({ currentSlide: slide }),

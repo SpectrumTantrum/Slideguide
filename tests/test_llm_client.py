@@ -1,8 +1,11 @@
 """Tests for the LLM client components."""
 
+import pytest
+
 from backend.config import settings
 from backend.llm.models import get_fallback_chain
-from backend.monitoring.metrics import MetricsCollector, estimate_cost as metrics_estimate
+from backend.monitoring.metrics import MetricsCollector
+from backend.monitoring.metrics import estimate_cost as metrics_estimate
 
 
 class TestModelSelection:
@@ -10,7 +13,8 @@ class TestModelSelection:
 
     def test_fallback_chain_is_primary_model(self):
         """The fallback chain is just the configured primary model."""
-        assert get_fallback_chain() == [settings.active_primary_model]
+        expected = [settings.active_primary_model] if settings.active_primary_model else []
+        assert get_fallback_chain() == expected
 
     def test_routing_falls_back_to_primary(self):
         """active_routing_model falls back to the primary model when unset."""
@@ -57,6 +61,50 @@ class TestCircuitBreaker:
 
         assert cb.state == "closed"
         assert cb.failure_count == 0
+
+    def test_llm_client_breakers_are_split_by_sdk(self):
+        from backend.llm.client import LLMClient
+
+        client = LLMClient()
+        client._breaker("cursor").record_failure()
+        client._breaker("cursor").record_failure()
+        client._breaker("cursor").record_failure()
+        client._breaker("cursor").record_failure()
+        client._breaker("cursor").record_failure()
+        assert client._breaker("cursor").state == "open"
+        assert client._breaker("openai").state == "closed"
+        client.reset_breaker("cursor")
+        assert client._breaker("cursor").state == "closed"
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_respects_open_breaker(self, monkeypatch):
+        from backend.llm.client import AllModelsExhaustedError, LLMClient
+        from backend.llm.runtime import bind_chat_sdk, reset_chat_sdk
+
+        monkeypatch.setattr(settings, "cursor_api_key", "crsr_test")
+        client = LLMClient()
+        for _ in range(5):
+            client._breaker("cursor").record_failure()
+
+        called = False
+
+        async def boom(*_args, **_kwargs):
+            nonlocal called
+            called = True
+            if False:
+                yield {}
+
+        monkeypatch.setattr(client, "_stream", boom)
+        token = bind_chat_sdk("cursor")
+        try:
+            with pytest.raises(AllModelsExhaustedError, match="Circuit breaker open"):
+                async for _ in client.stream_chat(
+                    messages=[{"role": "user", "content": "hi"}]
+                ):
+                    pass
+        finally:
+            reset_chat_sdk(token)
+        assert called is False
 
 
 class TestMetricsCollector:

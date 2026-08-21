@@ -1,0 +1,278 @@
+"""Process e2e for the Cursor SDK route.
+
+These tests go through ``LLMClient``, ``VisionClient``, and the settings
+API with official ``cursor-sdk`` types. Only ``Agent.create`` / model
+listing is stubbed so CI does not bill Cursor usage.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import cursor_sdk
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from backend.config import settings
+from backend.llm.client import LLMClient
+from backend.llm.cursor import CursorTranslator
+from backend.llm.runtime import bind_chat_sdk, current_chat_sdk, reset_chat_sdk
+from backend.llm.vision import VisionClient
+from backend.routes.settings import router as settings_router
+
+from .fakes import FakeCursorModels, RecordingAgent, model_id_and_params
+
+pytestmark = pytest.mark.e2e
+
+
+class _MemSessions:
+    def __init__(self) -> None:
+        self.rows: dict[str, dict[str, Any]] = {
+            "sess-1": {
+                "id": "sess-1",
+                "upload_id": "u1",
+                "phase": "GREETING",
+                "metadata": {},
+            }
+        }
+
+    def get_by_id(self, session_id: str) -> dict[str, Any] | None:
+        return self.rows.get(session_id)
+
+    def update(self, session_id: str, **data: Any) -> dict[str, Any]:
+        self.rows[session_id].update(data)
+        return self.rows[session_id]
+
+
+def _settings_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    repo = _MemSessions()
+    monkeypatch.setattr(
+        "backend.routes.settings.SessionRepository",
+        lambda _client: repo,
+    )
+    app = FastAPI()
+    app.state.supabase = object()
+    app.include_router(settings_router)
+    return TestClient(app)
+
+
+def test_cursor_sdk_exports_required_types():
+    from cursor_sdk import (
+        Agent,
+        AgentOptions,
+        CloudAgentOptions,
+        Cursor,
+        LocalAgentOptions,
+        ModelParameterValue,
+        ModelSelection,
+        SDKImage,
+        SDKModel,
+        UserMessage,
+    )
+
+    assert Agent.create is not None
+    assert Cursor.models.list is not None
+    assert AgentOptions is cursor_sdk.AgentOptions
+    assert LocalAgentOptions is cursor_sdk.LocalAgentOptions
+    assert CloudAgentOptions is cursor_sdk.CloudAgentOptions
+    assert ModelSelection is cursor_sdk.ModelSelection
+    assert ModelParameterValue is cursor_sdk.ModelParameterValue
+    assert SDKImage is cursor_sdk.SDKImage
+    assert SDKModel is cursor_sdk.SDKModel
+    assert UserMessage is cursor_sdk.UserMessage
+
+
+def test_agent_options_use_official_sdk_types(cursor_configured):
+    from cursor_sdk import AgentOptions, LocalAgentOptions, ModelSelection
+
+    translator = CursorTranslator()
+    options = translator.agent_options("grok-4.6", session_id="sess-e2e")
+
+    assert isinstance(options, AgentOptions)
+    assert isinstance(options.model, ModelSelection)
+    assert isinstance(options.local, LocalAgentOptions)
+    assert options.api_key == "crsr_e2e_test"
+    assert list(options.tools) == []
+    assert options.mcp_servers == {}
+    assert options.cloud is None
+
+    model_id, params = model_id_and_params(options.model)
+    assert model_id == "grok-4.6"
+    assert params == (("reasoning_effort", "high"),)
+    assert str(options.local.cwd).endswith("sess-e2e")
+    assert list(options.local.setting_sources or []) == []
+
+
+def test_cloud_runtime_refused_for_tutoring(cursor_configured, monkeypatch):
+    from backend.llm.cursor import CursorCloudRuntimeError, CursorTranslator
+
+    monkeypatch.setattr(settings, "cursor_runtime", "cloud")
+    with pytest.raises(CursorCloudRuntimeError, match="CURSOR_RUNTIME=cloud"):
+        CursorTranslator().agent_options("composer-2.5", session_id="sess-e2e")
+
+
+@pytest.mark.asyncio
+async def test_llm_client_chat_sends_grok_high(cursor_configured, monkeypatch):
+    RecordingAgent.last = None
+    monkeypatch.setattr(cursor_sdk, "Agent", RecordingAgent)
+    token = bind_chat_sdk("cursor", "sess-e2e")
+    try:
+        client = LLMClient()
+        response = await client.chat(
+            messages=[{"role": "user", "content": "Explain osmosis."}],
+        )
+
+        assert client.provider == "cursor"
+        assert current_chat_sdk() == "cursor"
+        assert response["choices"][0]["message"]["content"].startswith("Osmosis")
+        assert response["usage"]["total_tokens"] == 11
+        assert RecordingAgent.last is not None
+
+        model_id, params = model_id_and_params(RecordingAgent.last.options.model)
+        assert model_id == "grok-4.6"
+        assert params == (("reasoning_effort", "high"),)
+        assert list(RecordingAgent.last.options.tools) == []
+        assert "Explain osmosis." in RecordingAgent.last.message
+        assert str(RecordingAgent.last.options.local.cwd).endswith("sess-e2e")
+    finally:
+        reset_chat_sdk(token)
+
+
+@pytest.mark.asyncio
+async def test_llm_client_stream_yields_tokens(cursor_configured, monkeypatch):
+    monkeypatch.setattr(cursor_sdk, "Agent", RecordingAgent)
+    token = bind_chat_sdk("cursor", "sess-e2e")
+    try:
+        texts: list[str] = []
+        finish = None
+        async for chunk in LLMClient().stream_chat(
+            messages=[{"role": "user", "content": "Hi"}],
+            model="composer-2.5",
+        ):
+            delta = chunk["choices"][0]["delta"]["content"]
+            if delta:
+                texts.append(delta)
+            finish = chunk["choices"][0]["finish_reason"]
+    finally:
+        reset_chat_sdk(token)
+
+    assert "".join(texts) == "Osmosis works."
+    assert finish == "stop"
+    assert RecordingAgent.last is not None
+    assert RecordingAgent.last.options.model == "composer-2.5"
+
+
+@pytest.mark.asyncio
+async def test_vision_sends_jpeg_mime(cursor_configured, monkeypatch, tmp_path):
+    from cursor_sdk import SDKImage, UserMessage
+
+    RecordingAgent.last = None
+    monkeypatch.setattr(cursor_sdk, "Agent", RecordingAgent)
+    token = bind_chat_sdk("cursor", "sess-e2e")
+    try:
+        jpeg = tmp_path / "slide.jpg"
+        # Minimal JPEG (1x1)
+        jpeg.write_bytes(
+            bytes.fromhex(
+                "ffd8ffe000104a46494600010100000100010000ffdb004300080606070605080707"
+                "070909080a0c140d0c0b0b0c1912130f141d1a1f1e1d1a1c1c20242e2720222c231c"
+                "1c2837292c30313434341f27393d38323c2e333432ffdb0043010909090c0b0c180d"
+                "0d1832211c2132323232323232323232323232323232323232323232323232323232"
+                "323232323232323232323232323232323232323232ffc00011080001000103011100"
+                "0211031101ffc40014000100000000000000000000000000000000ffc40014100100"
+                "00000000000000000000000000000000ffda000c03010002110311003f00bf80ffd9"
+            )
+        )
+
+        description = await VisionClient().describe_image(str(jpeg), context="cell membrane")
+    finally:
+        reset_chat_sdk(token)
+
+    assert "Osmosis" in description
+    assert RecordingAgent.last is not None
+    assert isinstance(RecordingAgent.last.message, UserMessage)
+    images = list(RecordingAgent.last.message.images or [])
+    assert len(images) == 1
+    assert isinstance(images[0], SDKImage)
+    assert images[0].mime_type == "image/jpeg"
+    assert images[0].data
+
+
+@pytest.mark.asyncio
+async def test_vision_sends_sdk_image(cursor_configured, monkeypatch, tmp_path):
+    from cursor_sdk import SDKImage, UserMessage
+
+    RecordingAgent.last = None
+    monkeypatch.setattr(cursor_sdk, "Agent", RecordingAgent)
+    token = bind_chat_sdk("cursor", "sess-e2e")
+    try:
+        png = tmp_path / "slide.png"
+        png.write_bytes(
+            bytes.fromhex(
+                "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
+                "890000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+            )
+        )
+
+        description = await VisionClient().describe_image(str(png), context="cell membrane")
+    finally:
+        reset_chat_sdk(token)
+
+    assert "Osmosis" in description
+    assert RecordingAgent.last is not None
+    assert isinstance(RecordingAgent.last.message, UserMessage)
+    images = list(RecordingAgent.last.message.images or [])
+    assert len(images) == 1
+    assert isinstance(images[0], SDKImage)
+    assert images[0].mime_type == "image/png"
+    assert images[0].data
+
+
+def test_settings_switch_lists_cursor_catalog(cursor_configured, monkeypatch):
+    monkeypatch.setattr(cursor_sdk.Cursor, "models", FakeCursorModels())
+
+    client = _settings_client(monkeypatch)
+    switched = client.post(
+        "/api/settings/provider",
+        json={"provider": "cursor", "session_id": "sess-1"},
+    )
+    assert switched.status_code == 200
+    body = switched.json()
+    assert body["provider"] == "cursor"
+    assert body["sdk"] == "cursor-sdk"
+    assert body["usage"] == "cursor_subscription"
+    assert body["scope"] == "session"
+    assert body["session_id"] == "sess-1"
+    assert body["models"]["primary"] == "grok-4.6"
+    assert body["models"]["effort"] == "high"
+    assert body["capabilities"]["tool_mode"] == "prompt"
+    assert body["runtime"] == "local"
+    assert body["cursor"]["local_tools_disabled"] is True
+    assert current_chat_sdk() == "openai"
+
+    models = client.get("/api/settings/models", params={"session_id": "sess-1"})
+    assert models.status_code == 200
+    catalog = models.json()
+    assert catalog["provider"] == "cursor"
+    assert catalog["sdk"] == "cursor-sdk"
+    ids = [row["id"] for row in catalog["models"]]
+    assert ids[:3] == ["grok-4.6", "composer-2.5", "auto-smart"]
+    assert "gpt-5.5" in ids
+
+
+def test_settings_models_fallback_when_list_fails(cursor_configured, monkeypatch):
+    class BoomModels:
+        def list(self, **_kwargs):
+            raise RuntimeError("cursor models unavailable")
+
+    monkeypatch.setattr(cursor_sdk.Cursor, "models", BoomModels())
+
+    catalog = (
+        _settings_client(monkeypatch)
+        .get("/api/settings/models", params={"provider": "cursor"})
+        .json()
+    )
+    ids = [row["id"] for row in catalog["models"]]
+    assert ids == ["grok-4.6", "composer-2.5", "composer-2", "auto-smart"]
+    assert all(row["preferred"] is True for row in catalog["models"])

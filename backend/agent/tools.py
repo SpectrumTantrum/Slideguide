@@ -14,7 +14,6 @@ import json
 import time
 from typing import Any, Literal
 
-from backend.config import settings
 from backend.monitoring.logger import get_logger
 from backend.monitoring.metrics import metrics
 
@@ -100,9 +99,7 @@ async def generate_quiz_question(
     Creates a quiz question grounded in the slide content,
     with an answer key and explanation.
     """
-    from backend.llm.client import LLMClient
-
-    client = LLMClient()
+    from backend.agent.nodes import llm as client
 
     format_instructions = {
         "multiple_choice": "Provide 4 options labeled A, B, C, D. Include the correct answer letter.",
@@ -130,7 +127,7 @@ For short_answer, set options to null."""
 
     response = await client.chat(
         messages=[{"role": "user", "content": prompt}],
-        model=settings.active_routing_model,
+        purpose="route",
         temperature=0.8,
         max_tokens=500,
     )
@@ -170,9 +167,7 @@ async def evaluate_student_answer(
 
     Provides partial credit, feedback, and detailed explanation.
     """
-    from backend.llm.client import LLMClient
-
-    client = LLMClient()
+    from backend.agent.nodes import llm as client
 
     prompt = f"""Evaluate this student's answer:
 
@@ -193,7 +188,7 @@ Be encouraging regardless of whether they got it right or wrong."""
 
     response = await client.chat(
         messages=[{"role": "user", "content": prompt}],
-        model=settings.active_routing_model,
+        purpose="route",
         temperature=0.3,
         max_tokens=300,
     )

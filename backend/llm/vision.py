@@ -1,26 +1,29 @@
 """
 Vision Language Model (VLM) client for image understanding.
 
-Uses a vision-capable provider to send images (base64-encoded) for
-description, chart analysis, and diagram relationship extraction.
-Defaults to OpenRouter (cloud VLMs) even when the main LLM provider
-is set to LM Studio, because most local models lack vision support.
-Falls back gracefully when no vision provider is available.
+On the Cursor route, images are sent through cursor-sdk (Composer) and
+billed to Cursor usage. On the OpenAI-compatible route, the configured
+VISION_MODEL is used. Falls back gracefully when vision is unavailable.
 """
 
 from __future__ import annotations
 
 import base64
+import mimetypes
 from pathlib import Path
 from typing import Any
 
 import openai
 
 from backend.config import settings
-from backend.llm.providers import get_provider_config
+from backend.llm.cursor import CursorTranslator
+from backend.llm.providers import get_embedding_config
+from backend.llm.runtime import current_chat_sdk, models_for
 from backend.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
+
+_DEFAULT_IMAGE_MIME = "image/png"
 
 DESCRIBE_IMAGE_PROMPT = (
     "Describe this lecture slide image in detail for a student studying the material. "
@@ -49,28 +52,19 @@ EXTRACT_DIAGRAM_PROMPT = (
 
 class VisionClient:
     """
-    Client for describing images using vision-capable LLMs.
+    Client for describing images using vision-capable models.
 
-    Uses a dedicated client pointed at the vision provider (defaults to
-    OpenRouter). Falls back to a text message when no vision provider
-    is configured.
+    Uses the active chat provider SDK so vision tokens follow the same
+    subscription as tutoring chat.
     """
 
     def __init__(self) -> None:
-        self._provider_config = get_provider_config()
-        # Vision is enabled when a vision-capable model is configured for the
-        # endpoint. We trust the user-chosen endpoint serves that model.
-        self._available = bool(settings.active_vision_model)
+        self._openai_client: openai.AsyncOpenAI | None = None
 
-        if self._available:
-            self._client = openai.AsyncOpenAI(**self._provider_config.client_kwargs())
-        else:
-            self._client = None
-            logger.warning(
-                "vision_unavailable",
-                reason="No vision model configured. Set VISION_MODEL to a "
-                "vision-capable model served by your endpoint.",
-            )
+    def _openai(self) -> openai.AsyncOpenAI:
+        if self._openai_client is None:
+            self._openai_client = openai.AsyncOpenAI(**get_embedding_config().client_kwargs())
+        return self._openai_client
 
     async def describe_image(
         self,
@@ -87,15 +81,16 @@ class VisionClient:
         Returns:
             A text description of the image content.
         """
-        image_data = self._encode_image(image_path)
-        if not image_data:
+        encoded = self._encode_image(image_path)
+        if not encoded:
             return ""
+        image_data, mime_type = encoded
 
         prompt = DESCRIBE_IMAGE_PROMPT
         if context:
             prompt += f"\n\nContext from the slide: {context}"
 
-        return await self._call_vision(image_data, prompt)
+        return await self._call_vision(image_data, prompt, mime_type=mime_type)
 
     async def describe_chart(
         self,
@@ -103,15 +98,16 @@ class VisionClient:
         context: str = "",
     ) -> str:
         """Describe a chart or graph image in detail."""
-        image_data = self._encode_image(image_path)
-        if not image_data:
+        encoded = self._encode_image(image_path)
+        if not encoded:
             return ""
+        image_data, mime_type = encoded
 
         prompt = DESCRIBE_CHART_PROMPT
         if context:
             prompt += f"\n\nSlide context: {context}"
 
-        return await self._call_vision(image_data, prompt)
+        return await self._call_vision(image_data, prompt, mime_type=mime_type)
 
     async def extract_diagram_relationships(
         self,
@@ -119,26 +115,67 @@ class VisionClient:
         context: str = "",
     ) -> str:
         """Extract components and relationships from a diagram."""
-        image_data = self._encode_image(image_path)
-        if not image_data:
+        encoded = self._encode_image(image_path)
+        if not encoded:
             return ""
+        image_data, mime_type = encoded
 
         prompt = EXTRACT_DIAGRAM_PROMPT
         if context:
             prompt += f"\n\nSlide context: {context}"
 
-        return await self._call_vision(image_data, prompt)
+        return await self._call_vision(image_data, prompt, mime_type=mime_type)
 
     async def _call_vision(
         self,
         image_base64: str,
         prompt: str,
+        mime_type: str = _DEFAULT_IMAGE_MIME,
     ) -> str:
-        """Send an image to the vision model and return the description."""
-        if not self._available or self._client is None:
+        """Send an image to the active vision-capable provider."""
+        provider = current_chat_sdk()
+        if provider == "cursor":
+            return await self._call_cursor_vision(image_base64, prompt, mime_type)
+        return await self._call_openai_vision(image_base64, prompt, mime_type)
+
+    async def _call_cursor_vision(
+        self, image_base64: str, prompt: str, mime_type: str = _DEFAULT_IMAGE_MIME
+    ) -> str:
+        vision_model = models_for("cursor").vision
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{image_base64}",
+                        },
+                    },
+                ],
+            }
+        ]
+        try:
+            reply = await CursorTranslator().chat_async(messages, vision_model)
+            logger.info(
+                "vlm_description_generated",
+                model=reply.model or vision_model,
+                provider="cursor",
+                description_length=len(reply.text),
+            )
+            return reply.text
+        except Exception as e:
+            logger.error("vlm_call_failed", error=str(e), provider="cursor")
+            return ""
+
+    async def _call_openai_vision(
+        self, image_base64: str, prompt: str, mime_type: str = _DEFAULT_IMAGE_MIME
+    ) -> str:
+        if not settings.vision_model:
             return (
                 "[Vision unavailable] Image analysis requires a vision-capable model. "
-                "Set VISION_MODEL to a vision model served by your OpenAI-compatible endpoint."
+                "Set VISION_MODEL or bill this session to the Cursor SDK."
             )
 
         messages: list[dict[str, Any]] = [
@@ -149,7 +186,7 @@ class VisionClient:
                     {
                         "type": "image_url",
                         "image_url": {
-                            "url": f"data:image/png;base64,{image_base64}",
+                            "url": f"data:{mime_type};base64,{image_base64}",
                         },
                     },
                 ],
@@ -157,8 +194,8 @@ class VisionClient:
         ]
 
         try:
-            response = await self._client.chat.completions.create(
-                model=settings.active_vision_model,
+            response = await self._openai().chat.completions.create(
+                model=settings.vision_model,
                 messages=messages,
                 temperature=0.3,
                 max_tokens=1024,
@@ -168,28 +205,32 @@ class VisionClient:
 
             logger.info(
                 "vlm_description_generated",
-                model=settings.active_vision_model,
-                provider=self._provider_config.name,
+                model=settings.vision_model,
+                provider="openai",
                 description_length=len(content),
             )
 
             return content
 
         except Exception as e:
-            logger.error("vlm_call_failed", error=str(e), provider=self._provider_config.name)
+            logger.error("vlm_call_failed", error=str(e), provider="openai")
             return ""
 
     @staticmethod
-    def _encode_image(image_path: str) -> str:
-        """Read and base64-encode an image file."""
+    def _encode_image(image_path: str) -> tuple[str, str] | None:
+        """Read and base64-encode an image file; return ``(data, mime_type)``."""
         path = Path(image_path)
         if not path.exists():
             logger.warning("image_not_found", path=image_path)
-            return ""
+            return None
 
         try:
             image_bytes = path.read_bytes()
-            return base64.b64encode(image_bytes).decode("utf-8")
+            mime_type, _ = mimetypes.guess_type(str(path))
+            return (
+                base64.b64encode(image_bytes).decode("utf-8"),
+                mime_type or _DEFAULT_IMAGE_MIME,
+            )
         except Exception as e:
             logger.error("image_encode_failed", path=image_path, error=str(e))
-            return ""
+            return None
