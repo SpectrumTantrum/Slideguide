@@ -21,7 +21,6 @@ from backend.agent.prompts import (
 )
 from backend.agent.state import TutorState
 from backend.agent.tools import TOOL_SCHEMAS, execute_tool
-from backend.config import settings
 from backend.llm.client import LLMClient
 from backend.llm.tool_compatibility import ToolCompatibilityLayer
 from backend.monitoring.logger import get_logger
@@ -91,7 +90,7 @@ async def router_node(state: TutorState) -> dict[str, Any]:
             {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
             {"role": "user", "content": last_message.content if hasattr(last_message, 'content') else str(last_message)},
         ],
-        model=settings.active_routing_model,
+        purpose="route",
         temperature=0.1,
         max_tokens=200,
     )
@@ -191,7 +190,6 @@ async def explain_node(state: TutorState) -> dict[str, Any]:
     response = await tool_compat.wrap_chat_call(
         llm,
         messages=chat_messages,
-        model=settings.active_primary_model,
         tools=TOOL_SCHEMAS,
         temperature=0.7,
         max_tokens=2048,
@@ -279,7 +277,6 @@ async def quiz_node(state: TutorState) -> dict[str, Any]:
     response = await tool_compat.wrap_chat_call(
         llm,
         messages=chat_messages,
-        model=settings.active_primary_model,
         tools=TOOL_SCHEMAS,
         temperature=0.7,
         max_tokens=1024,
@@ -335,7 +332,6 @@ async def summarize_node(state: TutorState) -> dict[str, Any]:
 
     response = await llm.chat(
         messages=chat_messages,
-        model=settings.active_primary_model,
         temperature=0.5,
         max_tokens=1024,
     )
@@ -393,7 +389,7 @@ async def encourage_node(state: TutorState) -> dict[str, Any]:
             {"role": "system", "content": "You are a supportive tutor. Be warm and encouraging."},
             {"role": "user", "content": prompt},
         ],
-        model=settings.active_routing_model,  # Lightweight model for encouragement
+        purpose="route",
         temperature=0.8,
         max_tokens=200,
     )
@@ -452,7 +448,6 @@ async def clarify_node(state: TutorState) -> dict[str, Any]:
     response = await tool_compat.wrap_chat_call(
         llm,
         messages=chat_messages,
-        model=settings.active_primary_model,
         tools=TOOL_SCHEMAS,
         temperature=0.7,
         max_tokens=2048,

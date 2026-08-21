@@ -12,8 +12,6 @@ from typing import Literal
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_CURSOR_DEFAULT_MODEL = "grok-4.6"
-
 
 class Settings(BaseSettings):
     """SlideGuide application settings."""
@@ -47,7 +45,7 @@ class Settings(BaseSettings):
     cursor_runtime: Literal["local", "cloud"] = "local"
     cursor_model: str = ""  # optional; defaults to grok-4.6
     cursor_reasoning_effort: Literal["low", "medium", "high", "xhigh"] = "high"
-    cursor_workspace: str = ""  # optional isolated cwd for local agents
+    cursor_workspace: str = ""  # optional root; each session gets its own subdir
 
     # Supabase
     supabase_url: str = "http://127.0.0.1:54321"
@@ -76,18 +74,11 @@ class Settings(BaseSettings):
 
     @property
     def active_primary_model(self) -> str:
-        from backend.llm.runtime import get_active_provider
-
-        if get_active_provider() == "cursor":
-            return self.cursor_model or _CURSOR_DEFAULT_MODEL
+        """Env ``PRIMARY_MODEL`` only. Session SDK choice lives in ``llm.runtime``."""
         return self.primary_model
 
     @property
     def active_routing_model(self) -> str:
-        from backend.llm.runtime import get_active_provider
-
-        if get_active_provider() == "cursor":
-            return self.routing_model or self.cursor_model or _CURSOR_DEFAULT_MODEL
         return self.routing_model or self.primary_model
 
     @property
@@ -96,13 +87,7 @@ class Settings(BaseSettings):
 
     @property
     def active_vision_model(self) -> str:
-        from backend.llm.runtime import get_active_provider
-
-        if self.vision_model:
-            return self.vision_model
-        if get_active_provider() == "cursor":
-            return self.cursor_model or _CURSOR_DEFAULT_MODEL
-        return ""
+        return self.vision_model
 
     @property
     def is_production(self) -> bool:

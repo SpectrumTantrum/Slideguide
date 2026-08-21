@@ -1,12 +1,8 @@
 """
-Provider SDK registry.
+Provider catalog and embedding (RAG) HTTP config.
 
-SlideGuide can bill chat to different subscriptions by swapping the SDK:
-
-- ``openai`` — official OpenAI SDK against an OpenAI-compatible endpoint
-- ``cursor`` — official ``cursor-sdk`` against the user's Cursor usage
-
-Embeddings stay on the OpenAI-compatible endpoint (Cursor has no embedding API).
+``provider`` here means the OpenAI-compatible RAG endpoint. Chat SDK
+selection lives in ``backend.llm.runtime``.
 """
 
 from __future__ import annotations
@@ -15,11 +11,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from backend.config import settings
-from backend.llm.runtime import cursor_is_configured, get_active_provider
+from backend.llm.runtime import cursor_is_configured, default_provider
 
-# The OpenAI SDK refuses to initialize without a non-empty api_key. Many
-# OpenAI-compatible endpoints (local Ollama/vLLM/LocalAI, LM Studio, etc.) do
-# not require authentication, so we send a harmless placeholder in that case.
 _NO_AUTH_PLACEHOLDER = "sk-no-key-required"
 
 PROVIDER_CATALOG: tuple[dict[str, str], ...] = (
@@ -28,21 +21,21 @@ PROVIDER_CATALOG: tuple[dict[str, str], ...] = (
         "label": "Cursor",
         "sdk": "cursor-sdk",
         "usage": "cursor_subscription",
-        "description": "Bills chat to your Cursor plan via the official Cursor SDK.",
+        "description": "Bills this session's chat to your Cursor plan via cursor-sdk.",
     },
     {
         "id": "openai",
         "label": "OpenAI-compatible",
         "sdk": "openai",
         "usage": "openai_compatible_endpoint",
-        "description": "Bills chat to the configured OpenAI-compatible endpoint.",
+        "description": "Bills this session's chat to the configured OpenAI-compatible endpoint.",
     },
 )
 
 
 @dataclass(frozen=True)
 class ProviderConfig:
-    """Connection parameters for an OpenAI-compatible API endpoint."""
+    """Connection parameters for the OpenAI-compatible embeddings/chat HTTP API."""
 
     name: str
     base_url: str
@@ -50,7 +43,6 @@ class ProviderConfig:
     headers: dict[str, str]
 
     def client_kwargs(self) -> dict[str, Any]:
-        """Return kwargs suitable for ``openai.AsyncOpenAI(...)``."""
         kwargs: dict[str, Any] = {
             "base_url": self.base_url,
             "api_key": self.api_key,
@@ -61,12 +53,11 @@ class ProviderConfig:
 
 
 def get_provider_config() -> ProviderConfig:
-    """Resolve the OpenAI-compatible endpoint used for embeddings (and OpenAI chat)."""
+    """OpenAI-compatible HTTP endpoint used for embeddings (and OpenAI chat)."""
     return get_embedding_config()
 
 
 def get_embedding_config() -> ProviderConfig:
-    """OpenAI-compatible connection used for embeddings regardless of chat SDK."""
     return ProviderConfig(
         name="openai",
         base_url=settings.openai_base_url,
@@ -75,21 +66,8 @@ def get_embedding_config() -> ProviderConfig:
     )
 
 
-def create_chat_provider(name: str | None = None) -> Any:
-    """Instantiate the SDK adapter for ``name`` (or the active provider)."""
-    provider = name or get_active_provider()
-    if provider == "cursor":
-        from backend.llm.cursor_provider import CursorChatProvider
-
-        return CursorChatProvider()
-    from backend.llm.openai_provider import OpenAIChatProvider
-
-    return OpenAIChatProvider()
-
-
 def provider_metadata(provider: str | None = None) -> dict[str, Any]:
-    """Describe a provider for the settings API / frontend banner."""
-    provider = provider or get_active_provider()
+    provider = provider or default_provider()
     for entry in PROVIDER_CATALOG:
         if entry["id"] == provider:
             return dict(entry)
@@ -103,7 +81,6 @@ def provider_metadata(provider: str | None = None) -> dict[str, Any]:
 
 
 def available_providers() -> list[dict[str, Any]]:
-    """Providers the UI can offer, with whether each is configured."""
     rows: list[dict[str, Any]] = []
     for entry in PROVIDER_CATALOG:
         configured = True

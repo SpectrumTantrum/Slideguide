@@ -15,8 +15,9 @@ from typing import Any
 import openai
 
 from backend.config import settings
-from backend.llm.providers import create_chat_provider, get_embedding_config
-from backend.llm.runtime import get_active_provider
+from backend.llm.cursor import CursorTranslator
+from backend.llm.providers import get_embedding_config
+from backend.llm.runtime import current_chat_sdk, models_for
 from backend.monitoring.logger import get_logger
 
 logger = get_logger(__name__)
@@ -125,13 +126,13 @@ class VisionClient:
         prompt: str,
     ) -> str:
         """Send an image to the active vision-capable provider."""
-        provider = get_active_provider()
+        provider = current_chat_sdk()
         if provider == "cursor":
             return await self._call_cursor_vision(image_base64, prompt)
         return await self._call_openai_vision(image_base64, prompt)
 
     async def _call_cursor_vision(self, image_base64: str, prompt: str) -> str:
-        adapter = create_chat_provider("cursor")
+        vision_model = models_for("cursor").vision
         messages: list[dict[str, Any]] = [
             {
                 "role": "user",
@@ -145,29 +146,23 @@ class VisionClient:
             }
         ]
         try:
-            response = await adapter.chat(
-                messages=messages,
-                model=settings.active_vision_model,
-                temperature=0.3,
-                max_tokens=1024,
-            )
-            content = response.get("choices", [{}])[0].get("message", {}).get("content") or ""
+            reply = await CursorTranslator().chat_async(messages, vision_model)
             logger.info(
                 "vlm_description_generated",
-                model=settings.active_vision_model,
+                model=reply.model or vision_model,
                 provider="cursor",
-                description_length=len(content),
+                description_length=len(reply.text),
             )
-            return content
+            return reply.text
         except Exception as e:
             logger.error("vlm_call_failed", error=str(e), provider="cursor")
             return ""
 
     async def _call_openai_vision(self, image_base64: str, prompt: str) -> str:
-        if not settings.active_vision_model:
+        if not settings.vision_model:
             return (
                 "[Vision unavailable] Image analysis requires a vision-capable model. "
-                "Set VISION_MODEL or switch chat to the Cursor SDK."
+                "Set VISION_MODEL or bill this session to the Cursor SDK."
             )
 
         messages: list[dict[str, Any]] = [
@@ -187,7 +182,7 @@ class VisionClient:
 
         try:
             response = await self._openai().chat.completions.create(
-                model=settings.active_vision_model,
+                model=settings.vision_model,
                 messages=messages,
                 temperature=0.3,
                 max_tokens=1024,
@@ -197,7 +192,7 @@ class VisionClient:
 
             logger.info(
                 "vlm_description_generated",
-                model=settings.active_vision_model,
+                model=settings.vision_model,
                 provider="openai",
                 description_length=len(content),
             )

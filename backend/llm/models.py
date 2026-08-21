@@ -1,9 +1,9 @@
 """
 Model selection helpers.
 
-On the OpenAI-compatible route the configured primary model is used.
-On the Cursor SDK route, Cursor first-party models are preferred first
-(Grok 4.6 at high effort, then Composer, then Router).
+OpenAI-compatible route: configured ``PRIMARY_MODEL``.
+Cursor route: Grok 4.6 at high effort for tutoring, Composer for cheap
+JSON nodes. OpenAI-only ids are never forwarded into Cursor.
 """
 
 from __future__ import annotations
@@ -11,16 +11,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from backend.config import settings
-from backend.llm.runtime import get_active_provider
 
-# Cursor first-party ids. Order is the default try-list on that route.
 CURSOR_DEFAULT_MODEL = "grok-4.6"
 CURSOR_DEFAULT_EFFORT = "high"
+# Catalog order (UI). auto-smart is listed but not in the automatic fallback
+# chain — the installed cursor-sdk has no optimize_for param.
 CURSOR_PREFERRED_MODELS: tuple[str, ...] = (
     "grok-4.6",
     "composer-2.5",
     "composer-2",
     "auto-smart",
+)
+# Teaching fallback. Keep this short so one bad id cannot walk five agents.
+CURSOR_FALLBACK_MODELS: tuple[str, ...] = (
+    "grok-4.6",
+    "composer-2.5",
+    "composer-2",
+)
+CURSOR_ROUTING_MODELS: tuple[str, ...] = (
+    "composer-2.5",
+    "composer-2",
 )
 
 _CURSOR_OWNED_EXACT = frozenset({"auto-smart", "auto"})
@@ -63,23 +73,21 @@ def cursor_model_request(model_id: str = "", effort: str | None = None) -> Curso
     return CursorModelRequest(id=mid, params=params)
 
 
-def cursor_model_chain(primary: str = "") -> list[str]:
-    """
-    Fallback list for the Cursor route.
-
-    An explicit Cursor-owned primary stays first. Other first-party models
-    follow. A non-Cursor primary is appended after those.
-    """
+def cursor_fallback_chain(primary: str = "") -> list[str]:
+    """Short Cursor teaching fallback. Non-Cursor ids are dropped."""
     chain: list[str] = []
     primary = (primary or "").strip()
     if primary and is_cursor_owned_model(primary):
         chain.append(primary)
-    for model_id in CURSOR_PREFERRED_MODELS:
+    for model_id in CURSOR_FALLBACK_MODELS:
         if model_id not in chain:
             chain.append(model_id)
-    if primary and primary not in chain:
-        chain.append(primary)
     return chain
+
+
+def cursor_model_chain(primary: str = "") -> list[str]:
+    """Alias used by tests — teaching fallback only."""
+    return cursor_fallback_chain(primary)
 
 
 def prefer_cursor_models(model_ids: list[str]) -> list[str]:
@@ -98,13 +106,8 @@ def prefer_cursor_models(model_ids: list[str]) -> list[str]:
     return cursor_owned + others
 
 
-def get_fallback_chain(provider: str | None = None) -> list[str]:
-    """Return the ordered list of models to try for the active (or given) provider."""
-    provider = provider or get_active_provider()
-    if provider == "cursor":
-        chain = cursor_model_chain(settings.cursor_model or CURSOR_DEFAULT_MODEL)
-        extra = (settings.primary_model or "").strip()
-        if extra and extra not in chain:
-            chain.append(extra)
-        return chain
-    return [settings.primary_model]
+def get_fallback_chain(provider: str | None = None, purpose: str = "chat") -> list[str]:
+    """Return the ordered list of models to try for a chat SDK."""
+    from backend.llm.runtime import models_for
+
+    return models_for(provider, purpose=purpose).fallback  # type: ignore[arg-type]
