@@ -7,8 +7,9 @@ import asyncio
 import pytest
 
 from backend.config import settings
-from backend.llm.cursor_provider import CursorChatProvider
-from backend.llm.runtime import set_active_provider
+from backend.llm.client import LLMClient
+from backend.llm.cursor import CursorTranslator
+from backend.llm.runtime import bind_chat_sdk, reset_chat_sdk
 
 from .conftest import cursor_api_key
 
@@ -30,7 +31,6 @@ def live_cursor(monkeypatch: pytest.MonkeyPatch, tmp_path) -> str:
     monkeypatch.setattr(settings, "cursor_reasoning_effort", "high")
     monkeypatch.setattr(settings, "cursor_runtime", "local")
     monkeypatch.setattr(settings, "cursor_workspace", str(tmp_path / "cursor-live"))
-    set_active_provider("cursor")
     return key
 
 
@@ -44,7 +44,7 @@ async def test_live_cursor_lists_models(live_cursor: str):
     ids = [item.id for item in catalog]
     assert any(item_id.startswith("grok-") or item_id.startswith("composer-") for item_id in ids)
 
-    listed = await CursorChatProvider().list_models()
+    listed = await CursorTranslator().list_models()
     assert listed[0]["id"]
     assert listed[0].get("preferred") is True or "grok" in listed[0]["id"]
 
@@ -52,14 +52,16 @@ async def test_live_cursor_lists_models(live_cursor: str):
 @pytest.mark.asyncio
 async def test_live_cursor_chat_grok_high(live_cursor: str):
     del live_cursor
-    provider = CursorChatProvider()
-    response = await asyncio.wait_for(
-        provider.chat(
-            messages=[{"role": "user", "content": "Reply with the single word pong."}],
-            model="grok-4.6",
-        ),
-        timeout=LIVE_TIMEOUT_S,
-    )
+    token = bind_chat_sdk("cursor", "live-e2e")
+    try:
+        response = await asyncio.wait_for(
+            LLMClient().chat(
+                messages=[{"role": "user", "content": "Reply with the single word pong."}],
+            ),
+            timeout=LIVE_TIMEOUT_S,
+        )
+    finally:
+        reset_chat_sdk(token)
     text = response["choices"][0]["message"]["content"].strip().lower()
     assert text
     assert "pong" in text or len(text) < 80

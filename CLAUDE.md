@@ -62,13 +62,13 @@ supabase migration new <name>   # Create a new migration
 
 - **`agent/`** — LangGraph tutoring agent. State machine with 6 phases: `greeting → topic_selection → teaching → quiz → review → wrap_up`. Nodes: `router`, `explain`, `quiz`, `summarize`, `encourage`, `clarify`, `tool_executor`. Conditional routing based on phase and tool calls.
 - **`rag/`** — Hybrid retrieval pipeline. Semantic search (OpenAI-compatible embeddings in pgvector) + keyword search (PostgreSQL full-text) fused via Reciprocal Rank Fusion, then diversified with MMR. Slide-aware chunking preserves metadata (slide number, content type).
-- **`llm/`** — Chat is dispatched to a provider SDK so different subscriptions can bill usage: `openai` (OpenAI SDK against any OpenAI-compatible endpoint) or `cursor` (`cursor-sdk`, Cursor plan usage). Embeddings stay on the OpenAI-compatible endpoint. Includes retry/circuit breaker and a tool compatibility adapter (native ↔ prompt-based; Cursor is always prompt-based).
+- **`llm/`** — OpenAI-compatible HTTP stays in `LLMClient`. Cursor is one translator (`cursor.py`). Which SDK bills a turn is read only from `llm/runtime.py` (process default `LLM_PROVIDER`, plus a per-session / request bind). Embeddings stay on the OpenAI-compatible endpoint. Includes retry, **per-SDK** circuit breakers, and a tool compatibility adapter (native ↔ prompt-based; Cursor is always prompt-based).
 - **`db/`** — Repository pattern over Supabase. Separate repository classes per entity (`uploads`, `sessions`, `messages`, `progress`, `slides`, `storage`). Client singleton via `get_supabase()`.
 - **`routes/`** — FastAPI routers for chat (SSE streaming) and settings/provider management.
 - **`parsers/`** — PDF (PyMuPDF) and PPTX (python-pptx) parsing with optional Tesseract OCR for images.
 - **`monitoring/`** — structlog with request ID middleware, health endpoints (`/health/live`, `/health/ready`), cost/error metrics.
 - **`models/`** — Pydantic schemas shared across layers.
-- **`config.py`** — Single `Settings` class (pydantic-settings) loading from `.env`. Holds the OpenAI-compatible endpoint (`OPENAI_BASE_URL`, `OPENAI_API_KEY`) and model names; `active_*` properties resolve them.
+- **`config.py`** — Single `Settings` class (pydantic-settings) loading from `.env`. Holds the OpenAI-compatible endpoint (`OPENAI_BASE_URL`, `OPENAI_API_KEY`) and model names. `active_*` properties are env-only; session SDK choice lives in `llm/runtime.py`.
 - **`memory/`** — Session context window management (summarizes overflow) and student progress tracking (confidence, quiz scores, coverage). Sits on top of LangGraph checkpointer and Supabase tables.
 
 ### Frontend (`frontend/`)
@@ -85,12 +85,12 @@ Three migrations: initial schema, pgvector chunks, and storage bucket setup. Loc
 
 ## Key Patterns
 
-- **Provider SDKs**: `LLM_PROVIDER=openai|cursor` selects which SDK bills chat. Cursor requires `CURSOR_API_KEY` and prefers `grok-4.6` at `CURSOR_REASONING_EFFORT=high`, then Composer, then Router. `POST /api/settings/provider` switches the in-process SDK. Embeddings always use `OPENAI_BASE_URL` + `EMBEDDING_MODEL` (1536-d). Empty OpenAI API keys get a placeholder so keyless local endpoints work.
+- **Chat SDK**: `LLM_PROVIDER=openai|cursor` is the process default for new sessions. Cursor requires `CURSOR_API_KEY` and prefers `grok-4.6` at `CURSOR_REASONING_EFFORT=high`, then Composer 2.5 / Composer 2 (not `auto-smart`). `POST /api/settings/provider` requires `session_id` and writes `sessions.metadata.chat_sdk` for that session only. The banner does not auto-POST from `localStorage`. Embeddings always use `OPENAI_BASE_URL` + `EMBEDDING_MODEL` (1536-d). Empty OpenAI API keys get a placeholder so keyless local endpoints work.
 - **SSE events**: Chat streaming emits `token`, `phase_change`, `error`, `done` event types.
 - **Agent state** (`TutorState`): Append-only messages, phase tracking, student profile (confidence, consecutive correct/incorrect), teaching preferences (explanation mode, pacing level).
 - **Shared instances**: `vectorstore`, `ingestion_pipeline`, `retriever` are module-level singletons in `main.py`, initialized at import time.
 - **Tool compatibility**: `ToolCompatibilityLayer` auto-switches between native (OpenAI format) and prompt-based tool calling after 3 consecutive parse failures. The Cursor SDK route is always prompt-based. See `llm/tool_compatibility.py`.
-- **Model discovery**: `llm/discovery.py` lists models from the active SDK (`/v1/models` or `Cursor.models.list()`). Cursor-owned models are sorted first on that route.
+- **Model discovery**: `llm/discovery.py` lists models for a given chat SDK (`/v1/models` or `Cursor.models.list()`). Cursor-owned models are sorted first on that route.
 - **Checkpointing**: LangGraph uses `MemorySaver` (in-memory) by default; `AsyncPostgresSaver` available for persistent state. Thread ID = session ID.
 - **Cost tracking**: Per-model token/cost aggregation in `monitoring/metrics.py`. Recognized model IDs are priced via `MODEL_PRICING`; unknown/local models are tracked at $0.00.
 

@@ -29,6 +29,7 @@ class TestTutorState:
         assert state["pacing_preference"] == "medium"
         assert state["encouragement_due"] is False
         assert state["error_count"] == 0
+        assert state["chat_sdk"] == "openai"
 
     def test_initial_state_student_profile(self):
         """Student profile starts with neutral values."""

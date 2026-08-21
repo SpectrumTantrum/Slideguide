@@ -58,6 +58,20 @@ class TestCircuitBreaker:
         assert cb.state == "closed"
         assert cb.failure_count == 0
 
+    def test_llm_client_breakers_are_split_by_sdk(self):
+        from backend.llm.client import LLMClient
+
+        client = LLMClient()
+        client._breaker("cursor").record_failure()
+        client._breaker("cursor").record_failure()
+        client._breaker("cursor").record_failure()
+        client._breaker("cursor").record_failure()
+        client._breaker("cursor").record_failure()
+        assert client._breaker("cursor").state == "open"
+        assert client._breaker("openai").state == "closed"
+        client.reset_breaker("cursor")
+        assert client._breaker("cursor").state == "closed"
+
 
 class TestMetricsCollector:
     """Tests for the metrics collector."""

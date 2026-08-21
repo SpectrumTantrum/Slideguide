@@ -70,7 +70,7 @@ graph TB
 - **SSE streaming**: Real-time token-by-token response streaming
 - **Circuit breaker**: Retries with backoff and opens on repeated endpoint failures
 - **Bring-your-own endpoint**: Point at any OpenAI-compatible API — cloud or fully offline/keyless (Ollama, vLLM, LocalAI, …)
-- **Cursor subscription**: Set `LLM_PROVIDER=cursor` (or switch in the session banner) to bill tutoring chat to Cursor usage via the official Python SDK. Composer models are preferred first.
+- **Cursor subscription**: Set `LLM_PROVIDER=cursor` as the process default, or pick Cursor in the session banner (that session only) to bill tutoring chat to Cursor usage via the official Python SDK. Grok 4.6 at high effort is preferred first.
 
 ## Setup
 
@@ -155,9 +155,17 @@ vision then run through the official [`cursor-sdk`](https://cursor.com/docs/sdk/
 and appear on your Cursor usage dashboard under the SDK tag.
 
 On this route SlideGuide **prefers Grok 4.6 at high effort first** (Cursor's
-first-party general model), then Composer, then Cursor Router (`auto-smart`).
-Override with `CURSOR_MODEL` / `CURSOR_REASONING_EFFORT`. You can also switch
-SDKs from the session banner once the key is configured.
+first-party general model), then Composer 2.5 / Composer 2. `auto-smart` is
+listed in the catalog but is not in the automatic fallback chain. Override with
+`CURSOR_MODEL` / `CURSOR_REASONING_EFFORT`. `ROUTING_MODEL` / `VISION_MODEL` /
+`PRIMARY_MODEL` are ignored on this route unless they are Cursor-owned ids.
+Cheap JSON nodes (router, quiz scoring) stay on Composer, not Grok-high.
+
+`LLM_PROVIDER` is the process default for new sessions. The session banner
+stores a tab preference in `localStorage` and applies it on create / switch
+for **that session only** (`sessions.metadata.chat_sdk`).
+`POST /api/settings/provider` requires `session_id` and never flips a
+process-wide cell.
 
 ```bash
 LLM_PROVIDER=cursor
@@ -165,11 +173,13 @@ CURSOR_API_KEY=crsr_...
 CURSOR_RUNTIME=local          # local (default) or cloud
 CURSOR_MODEL=                 # optional; defaults to grok-4.6
 CURSOR_REASONING_EFFORT=high  # low | medium | high | xhigh
+CURSOR_WORKSPACE=             # optional root; each session gets its own subdir
 ```
 
-Local agents run text-only (`tools=[]`) in an isolated workspace so the Cursor
-agent cannot edit this repo. Cloud runtime uses a no-repo agent when enabled
-for your team.
+Local agents run text-only (`tools=[]`) in a **per-session** workspace under
+`CURSOR_WORKSPACE` or `/tmp/slideguide-cursor/<session_id>`. Cloud runtime
+omits `tools=[]` — team MCP servers and hooks still load. SSE disconnect
+cancels the in-flight Cursor run.
 
 ### OpenAI-compatible endpoint
 
@@ -203,7 +213,7 @@ VISION_MODEL=                                # optional; leave empty to disable 
 - **No key required**: if `OPENAI_API_KEY` is empty, a harmless placeholder is sent so the OpenAI SDK still initializes — keyless local endpoints work out of the box.
 - **Tool compatibility**: starts with native OpenAI-format tool calling; if the model fails to produce valid tool calls 3 times in a row, it switches to a prompt-based fallback that injects tool schemas into the system prompt.
 - **Cost tracking**: recognized model IDs are priced; unknown/local models are tracked at $0.00.
-- **Health + models**: `GET /api/settings/provider` reports the active SDK and its reachability; `POST /api/settings/provider` switches SDKs; `GET /api/settings/models` lists models (Cursor-owned first on the Cursor route).
+- **Health + models**: `GET /api/settings/provider` reports the process default (or `?session_id=` / `?provider=` preview). `POST /api/settings/provider` requires `{ provider, session_id }` and only changes that session. `GET /api/settings/models` lists models (Cursor-owned first on the Cursor route).
 
 ### Verifying the connection
 
@@ -246,13 +256,12 @@ slideguide/
 │   │       ├── storage.py   # Supabase Storage operations
 │   │       └── uploads.py   # Upload metadata CRUD
 │   ├── llm/            # LLM clients
-│   │   ├── client.py   # Provider-SDK facade with retry + circuit breaker
-│   │   ├── cursor_provider.py # cursor-sdk adapter (Cursor subscription)
-│   │   ├── openai_provider.py # OpenAI SDK adapter
-│   │   ├── discovery.py # Provider model discovery
-│   │   ├── models.py   # Cursor-first fallback chains
-│   │   ├── providers.py # SDK registry + embedding endpoint config
-│   │   ├── runtime.py  # In-process provider switch
+│   │   ├── client.py   # OpenAI HTTP + retry + per-SDK circuit breakers
+│   │   ├── cursor.py   # cursor-sdk translator (Cursor subscription)
+│   │   ├── discovery.py # Model discovery (argument is the chat SDK)
+│   │   ├── models.py   # Cursor teaching/routing fallback chains
+│   │   ├── providers.py # Catalog + embedding HTTP config
+│   │   ├── runtime.py  # Session/request chat-SDK selection
 │   │   ├── streaming.py # SSE stream handler
 │   │   ├── tool_compatibility.py # Native ↔ prompt-based tool use adapter
 │   │   └── vision.py   # VLM image understanding
@@ -297,8 +306,8 @@ slideguide/
 |-------|---------------|
 | **RAG Pipeline** | Hybrid search (semantic + PostgreSQL full-text), Reciprocal Rank Fusion, MMR diversity ranking |
 | **Agentic AI** | LangGraph multi-node graph with conditional routing, tool calling, state persistence |
-| **LLM Engineering** | Retry with exponential backoff, circuit breaker, cost tracking, pluggable provider SDKs (Cursor usage or OpenAI-compatible) |
-| **Provider Abstraction** | OpenAI SDK + Cursor SDK registry, Cursor-first model preference, model discovery, adaptive tool-calling compatibility layer |
+| **LLM Engineering** | Retry with exponential backoff, per-SDK circuit breakers, cost tracking, Cursor translator + OpenAI HTTP |
+| **Chat SDK selection** | `LLM_PROVIDER` process default; per-session override; Cursor-first model preference; model discovery; adaptive tool-calling |
 | **Prompt Engineering** | 5 explanation modes, adaptive quiz difficulty, neurodivergent-friendly formatting |
 | **Document Processing** | PDF (PyMuPDF) + PPTX parsing, OCR with VLM fallback, slide-aware chunking |
 | **Multimodal** | VLM image descriptions for charts/diagrams, base64 encoding, context injection |
@@ -318,9 +327,9 @@ slideguide/
 | `GET` | `/api/session/{session_id}` | Get session state |
 | `POST` | `/api/session/{session_id}/message` | Send a message (returns SSE stream) |
 | `GET` | `/api/session/{session_id}/history` | Get chat history for a session |
-| `GET` | `/api/settings/provider` | Get current provider SDK and capabilities |
-| `POST` | `/api/settings/provider` | Switch chat SDK (`openai` or `cursor`) |
-| `GET` | `/api/settings/models` | List available models for the active SDK |
+| `GET` | `/api/settings/provider` | Catalog + process default, or `?session_id=` / `?provider=` |
+| `POST` | `/api/settings/provider` | Switch one session's chat SDK (`provider` + `session_id`) |
+| `GET` | `/api/settings/models` | List models for a session or `?provider=` preview |
 | `GET` | `/health/live` | Liveness check |
 | `GET` | `/health/ready` | Readiness check |
 

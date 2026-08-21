@@ -1,1 +1,1 @@
-"""LLM integration: provider SDKs (OpenAI-compatible and Cursor), streaming."""
+"""LLM integration: OpenAI HTTP in LLMClient, Cursor via one translator."""

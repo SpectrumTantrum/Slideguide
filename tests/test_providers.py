@@ -1,19 +1,27 @@
-"""Tests for multi-SDK provider selection and the Cursor route."""
+"""Tests for session-scoped chat SDK selection and the Cursor translator."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from backend.config import settings
-from backend.llm.base import (
-    chat_completion_dict,
+from backend.llm.client import LLMClient
+from backend.llm.cursor import (
+    CursorTranslator,
+    cancel_active_runs,
     extract_image_payloads,
     format_messages_as_prompt,
     message_text,
+    workspace_dir,
 )
 from backend.llm.models import (
     CURSOR_DEFAULT_MODEL,
-    CURSOR_PREFERRED_MODELS,
+    CURSOR_FALLBACK_MODELS,
+    CURSOR_ROUTING_MODELS,
     cursor_model_chain,
     cursor_model_request,
     get_fallback_chain,
@@ -22,18 +30,64 @@ from backend.llm.models import (
 )
 from backend.llm.providers import available_providers, provider_metadata
 from backend.llm.runtime import (
+    bind_chat_sdk,
+    clear_chat_context,
+    current_chat_sdk,
     get_active_provider,
-    reset_active_provider,
-    set_active_provider,
+    models_for,
+    normalize_provider,
+    parse_provider,
+    reset_chat_sdk,
 )
 from backend.llm.tool_compatibility import ToolCompatibilityLayer
 
 
 @pytest.fixture(autouse=True)
-def _reset_provider():
-    reset_active_provider()
+def _reset_chat_ctx():
+    clear_chat_context()
     yield
-    reset_active_provider()
+    clear_chat_context()
+
+
+class _MemSessions:
+    """In-memory SessionRepository stand-in for settings-route tests."""
+
+    def __init__(self, _client: Any = None) -> None:
+        self.rows: dict[str, dict[str, Any]] = {
+            "sess-1": {
+                "id": "sess-1",
+                "upload_id": "u1",
+                "phase": "GREETING",
+                "metadata": {},
+            },
+            "sess-2": {
+                "id": "sess-2",
+                "upload_id": "u2",
+                "phase": "GREETING",
+                "metadata": {"chat_sdk": "openai"},
+            },
+        }
+
+    def get_by_id(self, session_id: str) -> dict[str, Any] | None:
+        return self.rows.get(session_id)
+
+    def update(self, session_id: str, **data: Any) -> dict[str, Any]:
+        self.rows[session_id].update(data)
+        return self.rows[session_id]
+
+
+def _settings_client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
+    repo = _MemSessions()
+    monkeypatch.setattr(
+        "backend.routes.settings.SessionRepository",
+        lambda _client: repo,
+    )
+    app = FastAPI()
+    app.state.supabase = object()
+    from backend.routes.settings import router
+
+    app.include_router(router)
+    return TestClient(app)
 
 
 class TestCursorModelPreference:
@@ -43,20 +97,21 @@ class TestCursorModelPreference:
         assert is_cursor_owned_model("auto-smart") is True
         assert is_cursor_owned_model("gpt-4o-mini") is False
 
-    def test_chain_starts_with_grok(self):
+    def test_teaching_chain_is_short_and_skips_auto_smart(self):
         chain = cursor_model_chain()
+        assert chain == list(CURSOR_FALLBACK_MODELS)
+        assert "auto-smart" not in chain
         assert chain[0] == "grok-4.6"
-        assert chain[:4] == list(CURSOR_PREFERRED_MODELS)
 
     def test_explicit_cursor_model_stays_first(self):
         chain = cursor_model_chain("auto-smart")
         assert chain[0] == "auto-smart"
         assert "grok-4.6" in chain
 
-    def test_third_party_primary_is_appended(self):
+    def test_third_party_primary_is_dropped(self):
         chain = cursor_model_chain("gpt-5.5")
+        assert "gpt-5.5" not in chain
         assert chain[0] == "grok-4.6"
-        assert chain[-1] == "gpt-5.5"
 
     def test_catalog_sorts_cursor_first(self):
         ordered = prefer_cursor_models(
@@ -72,6 +127,21 @@ class TestCursorModelPreference:
         chain = get_fallback_chain("cursor")
         assert chain[0] == "grok-4.6"
         assert "composer-2.5" in chain
+        assert "auto-smart" not in chain
+
+    def test_cursor_ignores_openai_routing_and_vision(self, monkeypatch):
+        monkeypatch.setattr(settings, "routing_model", "gpt-4o-mini")
+        monkeypatch.setattr(settings, "vision_model", "gpt-4o")
+        monkeypatch.setattr(settings, "primary_model", "gpt-4o-mini")
+        resolved = models_for("cursor")
+        assert resolved.routing == CURSOR_ROUTING_MODELS[0]
+        assert resolved.vision == resolved.primary
+        assert resolved.primary == "grok-4.6"
+        assert models_for("cursor", purpose="route").fallback == list(CURSOR_ROUTING_MODELS)
+
+    def test_cursor_keeps_owned_routing_override(self, monkeypatch):
+        monkeypatch.setattr(settings, "routing_model", "composer-2")
+        assert models_for("cursor").routing == "composer-2"
 
     def test_grok_defaults_to_high_effort(self):
         request = cursor_model_request()
@@ -87,25 +157,43 @@ class TestCursorModelPreference:
 class TestRuntimeSwitch:
     def test_default_provider_is_openai(self):
         assert get_active_provider() == "openai"
+        assert current_chat_sdk() == "openai"
 
-    def test_cannot_switch_to_cursor_without_key(self, monkeypatch):
+    def test_bind_is_request_local(self, monkeypatch):
+        monkeypatch.setattr(settings, "cursor_api_key", "crsr_test")
+        assert current_chat_sdk() == "openai"
+        token = bind_chat_sdk("cursor", "sess-1")
+        assert current_chat_sdk() == "cursor"
+        reset_chat_sdk(token)
+        assert current_chat_sdk() == "openai"
+
+    def test_cannot_bind_cursor_without_key(self, monkeypatch):
         monkeypatch.setattr(settings, "cursor_api_key", "")
         with pytest.raises(ValueError, match="CURSOR_API_KEY"):
-            set_active_provider("cursor")
+            bind_chat_sdk("cursor")
 
-    def test_switch_to_cursor_prefers_grok_high(self, monkeypatch):
+    def test_cannot_normalize_cursor_without_key(self, monkeypatch):
+        monkeypatch.setattr(settings, "cursor_api_key", "")
+        with pytest.raises(ValueError, match="CURSOR_API_KEY"):
+            normalize_provider("cursor")
+        assert parse_provider("cursor") == "cursor"
+
+    def test_models_for_cursor_does_not_mutate_env_settings(self, monkeypatch):
         monkeypatch.setattr(settings, "cursor_api_key", "crsr_test")
         monkeypatch.setattr(settings, "primary_model", "gpt-4o-mini")
         monkeypatch.setattr(settings, "cursor_model", "")
-        set_active_provider("cursor")
-        assert get_active_provider() == "cursor"
-        assert settings.active_primary_model == "grok-4.6"
-        assert get_fallback_chain()[0] == "grok-4.6"
-        assert "gpt-4o-mini" in get_fallback_chain()
+        token = bind_chat_sdk("cursor")
+        try:
+            assert current_chat_sdk() == "cursor"
+            assert settings.active_primary_model == "gpt-4o-mini"
+            assert models_for().primary == "grok-4.6"
+            assert "gpt-4o-mini" not in get_fallback_chain()
+        finally:
+            reset_chat_sdk(token)
 
     def test_unknown_provider_rejected(self):
         with pytest.raises(ValueError, match="Unknown provider"):
-            set_active_provider("anthropic")
+            parse_provider("anthropic")
 
 
 class TestProviderCatalog:
@@ -155,28 +243,62 @@ class TestPromptFormatting:
         ])
         assert images == [("abc123", "image/png")]
 
-    def test_chat_completion_shape(self):
-        payload = chat_completion_dict(
-            "hi", model="composer-2.5", prompt_tokens=2, completion_tokens=1
-        )
-        assert payload["choices"][0]["message"]["content"] == "hi"
-        assert payload["usage"]["total_tokens"] == 3
-
 
 class TestToolMode:
     def test_cursor_forces_prompt_tools(self, monkeypatch):
         monkeypatch.setattr(settings, "cursor_api_key", "crsr_test")
         layer = ToolCompatibilityLayer()
         assert layer.mode == "native"
-        set_active_provider("cursor")
-        assert layer.mode == "prompt"
+        token = bind_chat_sdk("cursor")
+        try:
+            assert layer.mode == "prompt"
+        finally:
+            reset_chat_sdk(token)
+        assert layer.mode == "native"
 
 
-class TestCursorChatProvider:
+class TestCursorTranslator:
+    def test_workspace_is_per_session(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(settings, "cursor_workspace", str(tmp_path / "root"))
+        first = workspace_dir("sess-a")
+        second = workspace_dir("sess-b")
+        assert first != second
+        assert first.endswith("sess-a")
+        assert second.endswith("sess-b")
+
+    def test_local_options_disable_tools(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(settings, "cursor_api_key", "crsr_test")
+        monkeypatch.setattr(settings, "cursor_runtime", "local")
+        monkeypatch.setattr(settings, "cursor_workspace", str(tmp_path / "root"))
+        options = CursorTranslator().agent_options("grok-4.6", session_id="sess-1")
+        assert list(options.tools) == []
+        assert str(options.local.cwd).endswith("sess-1")
+
+    def test_cloud_omits_tools(self, monkeypatch):
+        monkeypatch.setattr(settings, "cursor_api_key", "crsr_test")
+        monkeypatch.setattr(settings, "cursor_runtime", "cloud")
+        options = CursorTranslator().agent_options("composer-2.5", session_id="sess-1")
+        assert options.tools is None
+        assert options.cloud is not None
+        assert list(options.cloud.repos or []) == []
+
+    def test_cancel_active_runs(self):
+        class FakeRun:
+            def __init__(self) -> None:
+                self.cancelled = False
+
+            def cancel(self) -> None:
+                self.cancelled = True
+
+        from backend.llm import cursor as cursor_mod
+
+        run = FakeRun()
+        cursor_mod._track_run(run)
+        cancel_active_runs()
+        assert run.cancelled is True
+
     @pytest.mark.asyncio
-    async def test_chat_returns_openai_shape(self, monkeypatch):
-        from backend.llm.cursor_provider import CursorChatProvider
-
+    async def test_chat_returns_plain_reply(self, monkeypatch):
         class FakeUsage:
             input_tokens = 10
             output_tokens = 4
@@ -193,10 +315,11 @@ class TestCursorChatProvider:
             def wait(self):
                 return FakeResult()
 
+            def cancel(self) -> None:
+                return None
+
             def iter_text(self):
                 yield "Photosynthesis"
-                return
-                yield
 
         class FakeAgent:
             def __enter__(self):
@@ -215,12 +338,13 @@ class TestCursorChatProvider:
                 model = options.model
                 model_id = model if isinstance(model, str) else model.id
                 assert model_id == "grok-4.6"
-                if isinstance(model, str):
-                    params: tuple[tuple[str, str], ...] = ()
-                else:
-                    params = tuple((p.id, p.value) for p in model.params)
+                params = (
+                    ()
+                    if isinstance(model, str)
+                    else tuple((p.id, p.value) for p in model.params)
+                )
                 assert params == (("reasoning_effort", "high"),)
-                assert options.tools == []
+                assert list(options.tools) == []
                 return FakeAgent()
 
         monkeypatch.setattr(settings, "cursor_api_key", "crsr_test")
@@ -228,102 +352,128 @@ class TestCursorChatProvider:
 
         monkeypatch.setattr(cursor_sdk, "Agent", FakeAgentType)
 
-        provider = CursorChatProvider()
-        response = await provider.chat(
+        reply = await CursorTranslator().chat_async(
             messages=[{"role": "user", "content": "Explain photosynthesis"}],
             model="grok-4.6",
         )
-        assert response["choices"][0]["message"]["content"].startswith("Photosynthesis")
-        assert response["usage"]["prompt_tokens"] == 10
+        assert reply.text.startswith("Photosynthesis")
+        assert reply.prompt_tokens == 10
 
     @pytest.mark.asyncio
-    async def test_stream_chat_yields_deltas(self, monkeypatch):
-        from backend.llm.cursor_provider import CursorChatProvider
-
-        class FakeResult:
-            status = "finished"
-            result = "hello world"
-            id = "run-2"
-            model = type("M", (), {"id": "composer-2.5"})()
-            usage = None
-
-        class FakeRun:
-            def wait(self):
-                return FakeResult()
-
-            def iter_text(self):
-                yield "hello "
-                yield "world"
-
-        class FakeAgent:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return False
-
-            def send(self, message):
-                return FakeRun()
-
-        class FakeAgentType:
-            @staticmethod
-            def create(options):
-                return FakeAgent()
-
+    async def test_llm_client_unknown_model_falls_through(self, monkeypatch):
         monkeypatch.setattr(settings, "cursor_api_key", "crsr_test")
-        import cursor_sdk
+        client = LLMClient()
+        calls: list[str] = []
 
-        monkeypatch.setattr(cursor_sdk, "Agent", FakeAgentType)
+        async def once(provider, messages, model, tools, temperature, max_tokens):
+            del provider, messages, tools, temperature, max_tokens
+            calls.append(model)
+            if model == "grok-4.6":
+                raise RuntimeError("Unknown model grok-4.6 does not exist")
+            return {
+                "id": "ok",
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "ok",
+                            "tool_calls": None,
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {},
+            }
 
-        provider = CursorChatProvider()
-        texts: list[str] = []
-        finish = None
-        async for chunk in provider.stream_chat(
-            messages=[{"role": "user", "content": "Hi"}],
-            model="composer-2.5",
-        ):
-            delta = chunk["choices"][0]["delta"]["content"]
-            if delta:
-                texts.append(delta)
-            finish = chunk["choices"][0]["finish_reason"]
-        assert "".join(texts) == "hello world"
-        assert finish == "stop"
+        monkeypatch.setattr(client, "_once", once)
+        token = bind_chat_sdk("cursor")
+        try:
+            response = await client.chat(messages=[{"role": "user", "content": "hi"}])
+        finally:
+            reset_chat_sdk(token)
+        assert calls[0] == "grok-4.6"
+        assert calls[1] == "composer-2.5"
+        assert response["choices"][0]["message"]["content"] == "ok"
+
+    def test_breakers_are_per_sdk_and_reset(self):
+        client = LLMClient()
+        cursor = client._breaker("cursor")
+        openai = client._breaker("openai")
+        for _ in range(5):
+            cursor.record_failure()
+        assert cursor.can_execute() is False
+        assert openai.can_execute() is True
+        client.reset_breaker("cursor")
+        assert cursor.can_execute() is True
 
 
 class TestSettingsRoutes:
+    def test_post_without_session_id_is_400(self, monkeypatch):
+        monkeypatch.setattr(settings, "cursor_api_key", "crsr_test")
+        response = _settings_client(monkeypatch).post(
+            "/api/settings/provider", json={"provider": "cursor"}
+        )
+        assert response.status_code == 400
+        assert "session_id" in response.json()["detail"]
+
     def test_switch_to_cursor_without_key_is_400(self, monkeypatch):
-        from fastapi import FastAPI
-        from fastapi.testclient import TestClient
-
-        from backend.routes.settings import router
-
         monkeypatch.setattr(settings, "cursor_api_key", "")
-        app = FastAPI()
-        app.include_router(router)
-        response = TestClient(app).post("/api/settings/provider", json={"provider": "cursor"})
+        response = _settings_client(monkeypatch).post(
+            "/api/settings/provider",
+            json={"provider": "cursor", "session_id": "sess-1"},
+        )
         assert response.status_code == 400
         assert "CURSOR_API_KEY" in response.json()["detail"]
 
-    def test_get_provider_includes_available_sdks(self, monkeypatch):
-        from fastapi import FastAPI
-        from fastapi.testclient import TestClient
+    def test_post_updates_only_that_session(self, monkeypatch):
+        monkeypatch.setattr(settings, "cursor_api_key", "crsr_test")
 
-        from backend.routes.settings import router
-
-        async def fake_chat_health():
+        async def fake_chat_health(provider=None):
             return {"status": "ok", "models_loaded": 3}
 
         async def fake_embed_health(_url: str):
             return {"status": "ok", "models_loaded": 1}
 
-        monkeypatch.setattr(
-            "backend.routes.settings.check_active_provider_health", fake_chat_health
+        monkeypatch.setattr("backend.routes.settings.check_chat_health", fake_chat_health)
+        monkeypatch.setattr("backend.routes.settings.check_endpoint_health", fake_embed_health)
+
+        client = _settings_client(monkeypatch)
+        response = client.post(
+            "/api/settings/provider",
+            json={"provider": "cursor", "session_id": "sess-1"},
         )
-        monkeypatch.setattr(
-            "backend.routes.settings.check_endpoint_health", fake_embed_health
-        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["provider"] == "cursor"
+        assert body["scope"] == "session"
+        assert body["session_id"] == "sess-1"
+        assert body["cursor"]["local_tools_disabled"] is True
+        assert body["cursor"]["cloud_loads_team_tools"] is False
+
+        other = client.get("/api/settings/provider", params={"session_id": "sess-2"})
+        assert other.status_code == 200
+        assert other.json()["provider"] == "openai"
+
+        default = client.get("/api/settings/provider")
+        assert default.status_code == 200
+        assert default.json()["provider"] == "openai"
+        assert default.json()["scope"] == "process_default"
+
+    def test_get_provider_includes_available_sdks(self, monkeypatch):
+        async def fake_chat_health(provider=None):
+            return {"status": "ok", "models_loaded": 3}
+
+        async def fake_embed_health(_url: str):
+            return {"status": "ok", "models_loaded": 1}
+
+        monkeypatch.setattr("backend.routes.settings.check_chat_health", fake_chat_health)
+        monkeypatch.setattr("backend.routes.settings.check_endpoint_health", fake_embed_health)
 
         app = FastAPI()
+        from backend.routes.settings import router
+
         app.include_router(router)
         response = TestClient(app).get("/api/settings/provider")
         assert response.status_code == 200

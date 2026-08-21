@@ -8,7 +8,7 @@ from collections.abc import Iterator
 import pytest
 
 from backend.config import settings
-from backend.llm.runtime import reset_active_provider
+from backend.llm.runtime import clear_chat_context
 
 
 def cursor_api_key() -> str:
@@ -17,10 +17,10 @@ def cursor_api_key() -> str:
 
 
 @pytest.fixture(autouse=True)
-def _reset_provider() -> Iterator[None]:
-    reset_active_provider()
+def _reset_chat_ctx() -> Iterator[None]:
+    clear_chat_context()
     yield
-    reset_active_provider()
+    clear_chat_context()
 
 
 @pytest.fixture

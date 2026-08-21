@@ -46,6 +46,9 @@ class FakeRun:
     def wait(self) -> FakeResult:
         return self._result
 
+    def cancel(self) -> None:
+        return None
+
     def iter_text(self):
         yield from self._tokens
 
