@@ -10,7 +10,8 @@ class TestModelSelection:
 
     def test_fallback_chain_is_primary_model(self):
         """The fallback chain is just the configured primary model."""
-        assert get_fallback_chain() == [settings.active_primary_model]
+        expected = [settings.active_primary_model] if settings.active_primary_model else []
+        assert get_fallback_chain() == expected
 
     def test_routing_falls_back_to_primary(self):
         """active_routing_model falls back to the primary model when unset."""

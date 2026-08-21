@@ -121,7 +121,8 @@ class TestCursorModelPreference:
         assert ordered[-2:] == ["gpt-5.5", "claude-4"]
 
     def test_fallback_chain_openai_is_primary(self):
-        assert get_fallback_chain("openai") == [settings.primary_model]
+        expected = [settings.primary_model] if settings.primary_model else []
+        assert get_fallback_chain("openai") == expected
 
     def test_fallback_chain_cursor_prefers_grok(self):
         chain = get_fallback_chain("cursor")
