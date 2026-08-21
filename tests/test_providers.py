@@ -160,6 +160,21 @@ class TestRuntimeSwitch:
         assert get_active_provider() == "openai"
         assert current_chat_sdk() == "openai"
 
+    def test_resolve_provider_none_validates_cursor_default(self, monkeypatch):
+        monkeypatch.setattr(settings, "llm_provider", "cursor")
+        monkeypatch.setattr(settings, "cursor_api_key", "")
+        from backend.llm.runtime import resolve_provider
+
+        with pytest.raises(ValueError, match="CURSOR_API_KEY"):
+            resolve_provider(None)
+
+    def test_resolve_provider_none_accepts_configured_cursor_default(self, monkeypatch):
+        monkeypatch.setattr(settings, "llm_provider", "cursor")
+        monkeypatch.setattr(settings, "cursor_api_key", "crsr_test")
+        from backend.llm.runtime import resolve_provider
+
+        assert resolve_provider(None) == "cursor"
+
     def test_bind_is_request_local(self, monkeypatch):
         monkeypatch.setattr(settings, "cursor_api_key", "crsr_test")
         assert current_chat_sdk() == "openai"

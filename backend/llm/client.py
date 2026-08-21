@@ -222,6 +222,11 @@ class LLMClient:
         resolved = models_for(sdk, purpose=purpose)  # type: ignore[arg-type]
         model = model or (resolved.routing if purpose == "route" else resolved.primary)
         breaker = self._breaker(sdk)
+        if not breaker.can_execute():
+            logger.warning("circuit_breaker_blocking", model=model, provider=sdk)
+            raise AllModelsExhaustedError(
+                f"Circuit breaker open for provider '{sdk}'; streaming unavailable"
+            )
         try:
             async for chunk in self._stream(
                 sdk, messages, model, tools, temperature, max_tokens

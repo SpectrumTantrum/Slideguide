@@ -73,10 +73,13 @@ def normalize_provider(provider: str) -> str:
 
 
 def resolve_provider(requested: str | None = None) -> str:
-    """Resolve a request/session choice, falling back to ``LLM_PROVIDER``."""
-    if requested:
-        return normalize_provider(requested)
-    return default_provider()
+    """Resolve a request/session choice, falling back to ``LLM_PROVIDER``.
+
+    Always runs credential checks (e.g. ``CURSOR_API_KEY`` when the
+    resolved SDK is Cursor), including when the caller omitted ``requested``
+    and we fall back to the process default.
+    """
+    return normalize_provider(requested or default_provider())
 
 
 def clear_chat_context() -> None:

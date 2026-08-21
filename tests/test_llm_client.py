@@ -1,5 +1,7 @@
 """Tests for the LLM client components."""
 
+import pytest
+
 from backend.config import settings
 from backend.llm.models import get_fallback_chain
 from backend.monitoring.metrics import MetricsCollector, estimate_cost as metrics_estimate
@@ -72,6 +74,36 @@ class TestCircuitBreaker:
         assert client._breaker("openai").state == "closed"
         client.reset_breaker("cursor")
         assert client._breaker("cursor").state == "closed"
+
+    @pytest.mark.asyncio
+    async def test_stream_chat_respects_open_breaker(self, monkeypatch):
+        from backend.llm.client import AllModelsExhaustedError, LLMClient
+        from backend.llm.runtime import bind_chat_sdk, reset_chat_sdk
+
+        monkeypatch.setattr(settings, "cursor_api_key", "crsr_test")
+        client = LLMClient()
+        for _ in range(5):
+            client._breaker("cursor").record_failure()
+
+        called = False
+
+        async def boom(*_args, **_kwargs):
+            nonlocal called
+            called = True
+            if False:
+                yield {}
+
+        monkeypatch.setattr(client, "_stream", boom)
+        token = bind_chat_sdk("cursor")
+        try:
+            with pytest.raises(AllModelsExhaustedError, match="Circuit breaker open"):
+                async for _ in client.stream_chat(
+                    messages=[{"role": "user", "content": "hi"}]
+                ):
+                    pass
+        finally:
+            reset_chat_sdk(token)
+        assert called is False
 
 
 class TestMetricsCollector:
